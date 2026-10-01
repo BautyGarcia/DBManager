@@ -7,3 +7,6 @@ dist/
 *.local.json
 .DS_Store
 .superpowers/
+coverage/
+.vitest/
+*.tgz

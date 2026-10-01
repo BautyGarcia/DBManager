@@ -1,0 +1,62 @@
+{
+  "name": "db-manager",
+  "version": "0.1.0",
+  "description": "Self-hosted per-project Postgres + S3 on one VPS, managed from the CLI (dbm).",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "bin": {
+    "dbm": "./bin/dbm.js"
+  },
+  "exports": {
+    ".": "./dist/cli.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "templates",
+    "skills",
+    "compose"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome ci .",
+    "lint:fix": "biome check --write .",
+    "test": "vitest run",
+    "test:unit": "vitest run --project unit",
+    "test:integration": "vitest run --project integration",
+    "dev": "tsx src/cli.ts",
+    "prepack": "npm run clean && npm run build"
+  },
+  "dependencies": {
+    "commander": "15.0.0",
+    "execa": "10.0.1",
+    "pg": "8.23.1",
+    "picocolors": "1.1.1",
+    "shlex": "3.0.0",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@aws-sdk/client-s3": "3.1144.0",
+    "@aws-sdk/s3-request-presigner": "3.1144.0",
+    "@biomejs/biome": "2.5.15",
+    "@types/node": "22.20.4",
+    "@types/pg": "8.23.1",
+    "drizzle-kit": "0.31.11",
+    "drizzle-orm": "0.45.3",
+    "msw": "3.0.1",
+    "postgres": "3.4.9",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2",
+    "vite": "8.3.1",
+    "vitest": "5.0.3"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
