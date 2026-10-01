@@ -1,3 +1,6 @@
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { execa } from 'execa';
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_HARDEN, renderHardenScript } from '../../src/core/harden.js';
@@ -36,5 +39,27 @@ describe('renderHardenScript', () => {
     const s = renderHardenScript({ ...DEFAULT_HARDEN, sshPort: 2222, publicTcpPorts: [443] });
     expect(s).toContain('ufw allow 2222/tcp');
     expect(s).not.toContain('--ctorigdstport 6432');
+  });
+  it('after.rules update is idempotent', async () => {
+    const m = script.match(/^step_docker_user_rules\(\)\{\n[\s\S]*?^\}\n/m);
+    expect(m).not.toBeNull();
+    const dir = mkdtempSync(join(tmpdir(), 'dbm-harden-'));
+    try {
+      const f = join(dir, 'after.rules');
+      writeFileSync(f, '*filter\n:ufw-user-forward - [0:0]\nCOMMIT\n');
+      const harness = `log(){ :; }\n${m?.[0]}\nstep_docker_user_rules\n`;
+      const run = () =>
+        execa('bash', ['-c', harness], { env: { DBM_UFW_AFTER_RULES: f }, reject: false });
+      const r1 = await run();
+      expect(r1.exitCode, r1.stderr).toBe(0);
+      const first = readFileSync(f, 'utf8');
+      const r2 = await run();
+      expect(r2.exitCode, r2.stderr).toBe(0);
+      expect(readFileSync(f, 'utf8')).toBe(first);
+      expect(first.split('# BEGIN DBM DOCKER-USER').length - 1).toBe(1);
+      expect(first.startsWith('*filter\n')).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

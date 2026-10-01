@@ -134,11 +134,13 @@ COMMIT
 # END DBM DOCKER-USER
 EOT
 )"
-  local f=/etc/ufw/after.rules tmp; tmp="$(mktemp)"
-  awk '/^# BEGIN DBM DOCKER-USER/{skip=1} !skip{print} /^# END DBM DOCKER-USER/{skip=0}' "$f" >"$tmp"
+  local f="${'$'}{DBM_UFW_AFTER_RULES:-/etc/ufw/after.rules}" tmp tmp2; tmp="$(mktemp)"; tmp2="$(mktemp)"
+  awk '/^# BEGIN DBM DOCKER-USER/{skip=1} !skip{print} /^# END DBM DOCKER-USER/{skip=0}' "$f" >"$tmp2"
+  # drop trailing blank lines so the separator written below does not accumulate across runs
+  awk '/^$/{b++; next} {for(;b>0;b--) print ""; print}' "$tmp2" >"$tmp"
   printf '\\n%s\\n' "$block" >>"$tmp"
   if ! cmp -s "$tmp" "$f"; then install -m 0640 "$tmp" "$f"; log "after.rules: DOCKER-USER block updated"; fi
-  rm -f "$tmp"
+  rm -f "$tmp" "$tmp2"
 }
 
 step_ufw(){
