@@ -6,3 +6,4 @@ dist/
 .dbm/
 *.local.json
 .DS_Store
+.superpowers/
