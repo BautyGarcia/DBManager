@@ -3,6 +3,7 @@ import {
   createDatabaseSql,
   createRoleSql,
   extensionsSql,
+  grantReplicaRoleSql,
   quoteIdent,
   quoteLiteral,
   tuningSql,
@@ -19,6 +20,9 @@ describe('sql builders', () => {
   it('creates a NOSUPERUSER login role with a verifier literal', () => {
     expect(createRoleSql('my_app_app', 'SCRAM-SHA-256$4096:s$k:k')).toBe(
       `CREATE ROLE "my_app_app" LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT PASSWORD 'SCRAM-SHA-256$4096:s$k:k';`,
+    );
+    expect(grantReplicaRoleSql('my_app_app')).toBe(
+      'GRANT SET ON PARAMETER session_replication_role TO "my_app_app";',
     );
     expect(createDatabaseSql('my_app', 'my_app_app')).toBe(
       'CREATE DATABASE "my_app" OWNER "my_app_app";',

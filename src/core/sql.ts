@@ -16,6 +16,10 @@ export function createDatabaseSql(database: string, owner: string): string {
   return `CREATE DATABASE ${quoteIdent(database)} OWNER ${quoteIdent(owner)};`;
 }
 
+export function grantReplicaRoleSql(appRole: string): string {
+  return `GRANT SET ON PARAMETER session_replication_role TO ${quoteIdent(appRole)};`;
+}
+
 const EXTENSION_RE = /^[a-z_][a-z0-9_-]*$/;
 
 export function validateExtensions(exts: string[]): string[] {

@@ -9,6 +9,7 @@ import {
   createDatabaseSql,
   createRoleSql,
   extensionsSql,
+  grantReplicaRoleSql,
   tuningSql,
   validateExtensions,
 } from '../core/sql.js';
@@ -174,7 +175,7 @@ export async function createCommand(deps: Deps, o: CreateOptions): Promise<Creat
     });
     await deps.pg.runSql(
       adminTarget(project),
-      `${createRoleSql(names.appRole, appScramVerifier)}\n${createDatabaseSql(names.database, names.appRole)}\n`,
+      `${createRoleSql(names.appRole, appScramVerifier)}\n${createDatabaseSql(names.database, names.appRole)}\n${grantReplicaRoleSql(names.appRole)}\n`,
     );
     await deps.pg.runSql(adminTarget(project, names.database), extensionsSql(extensions));
     await deps.pg.runSql(adminTarget(project), tuningSql(memoryBytes));

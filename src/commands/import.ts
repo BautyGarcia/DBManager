@@ -1,6 +1,6 @@
 import { quote } from 'shlex';
 import { IMAGES } from '../core/compose.js';
-import { userError } from '../core/exit.js';
+import { DbmError, remoteError, userError } from '../core/exit.js';
 import { getProject } from '../core/state.js';
 import type { Deps } from './context.js';
 
@@ -64,8 +64,8 @@ export function importScript(o: { src: string; dst: string; schemas: string[] })
   return `set -u
 SRC='${o.src.replaceAll("'", "'\\''")}'
 DST='${o.dst.replaceAll("'", "'\\''")}'
-pg_dump "$SRC" --schema-only --no-owner --no-privileges --no-comments --no-publications --no-subscriptions ${schemaFlags} -f /tmp/schema.sql
-pg_dump "$SRC" --data-only --no-owner --no-privileges ${schemaFlags} -f /tmp/data.sql
+pg_dump "$SRC" --schema-only --no-owner --no-privileges --no-comments --no-publications --no-subscriptions ${schemaFlags} -f /tmp/schema.sql || { echo '---DUMP-FAILED---'; exit 1; }
+pg_dump "$SRC" --data-only --no-owner --no-privileges ${schemaFlags} -f /tmp/data.sql || { echo '---DUMP-FAILED---'; exit 1; }
 echo '---SCHEMA-ERRORS---'
 psql "$DST" -v ON_ERROR_STOP=0 -q -f /tmp/schema.sql 2>&1 >/dev/null | grep -E 'ERROR|FATAL' || true
 echo '---DATA-ERRORS---'
@@ -97,21 +97,33 @@ export async function importCommand(deps: Deps, o: ImportOptions): Promise<Impor
   deps.io.err(
     `dumping ${schemas.join(', ')} from source and restoring into ${o.slug} (this can take a while)...\n`,
   );
-  const r = await deps.ssh.run(
-    [
-      'docker',
-      'run',
-      '--rm',
-      '-i',
-      '--network',
-      deps.cfg.remote.dockerNetwork,
-      IMAGES.postgres18,
-      'bash',
-      '-s',
-    ],
-    { input: importScript({ src: o.from, dst, schemas }), timeoutMs: 60 * 60_000 },
-  );
-  const out = r.stdout;
+  let out: string;
+  try {
+    const r = await deps.ssh.run(
+      [
+        'docker',
+        'run',
+        '--rm',
+        '-i',
+        '--network',
+        deps.cfg.remote.dockerNetwork,
+        IMAGES.postgres18,
+        'bash',
+        '-s',
+      ],
+      { input: importScript({ src: o.from, dst, schemas }), timeoutMs: 60 * 60_000 },
+    );
+    out = r.stdout;
+  } catch (e) {
+    if (e instanceof DbmError)
+      throw new DbmError(`pg_dump/psql failed: ${e.message}`, e.exitCode, e.step);
+    throw e;
+  }
+  if (!out.includes('---END---'))
+    throw remoteError(
+      `import script did not complete (no END marker); output: ${out.slice(0, 500)}`,
+      'import.dump',
+    );
   const schemaErr = out.split('---SCHEMA-ERRORS---')[1]?.split('---DATA-ERRORS---')[0] ?? '';
   const dataErr = out.split('---DATA-ERRORS---')[1]?.split('---END---')[0] ?? '';
   const errors = classifyErrors(`${schemaErr}\n${dataErr}`);

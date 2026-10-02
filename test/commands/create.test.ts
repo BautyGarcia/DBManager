@@ -35,6 +35,9 @@ describe('createCommand', () => {
       'CREATE DATABASE "my_app" OWNER "my_app_app";',
     );
     expect(t.pg.sql.map((s) => s.sql).join('\n')).toContain(
+      'GRANT SET ON PARAMETER session_replication_role TO "my_app_app";',
+    );
+    expect(t.pg.sql.map((s) => s.sql).join('\n')).toContain(
       'CREATE EXTENSION IF NOT EXISTS "pgcrypto";',
     );
     expect(t.pg.sql.map((s) => s.sql).join('\n')).toContain(

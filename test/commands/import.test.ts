@@ -39,6 +39,14 @@ describe('importScript', () => {
     expect(s).toContain('---DATA-ERRORS---');
     expect(s).not.toContain('6543');
   });
+  it('escapes single quotes in URLs', () => {
+    const s = importScript({ src: "postgresql://u:p'w@h:5432/d", dst: 'x', schemas: ['public'] });
+    expect(s).toContain("SRC='postgresql://u:p'\\''w@h:5432/d'");
+  });
+  it('fails fast when a dump fails', () => {
+    const s = importScript({ src: 'a', dst: 'b', schemas: ['public'] });
+    expect(s.match(/---DUMP-FAILED---/g)).toHaveLength(2);
+  });
   it('rejects invalid schema names', () => {
     expect(() => importScript({ src: 'a', dst: 'b', schemas: ['public; rm -rf /'] })).toThrow(
       /schema/,
@@ -99,5 +107,41 @@ describe('importCommand', () => {
         storage: { endpoint: 'ftp://x', region: 'r', keyId: 'K', keySecret: 'S', bucket: 'b' },
       }),
     ).rejects.toThrow(/endpoint/);
+  });
+  it('keeps Supabase storage keys out of rclone argv', async () => {
+    const runner = makeFakeRunner([
+      { match: /bash -s/, stdout: '---SCHEMA-ERRORS---\n---DATA-ERRORS---\n---END---' },
+    ]);
+    const t = makeTestDeps({ runner });
+    t.store.state = upsertProject(t.store.state, fakeProject('my-app'));
+    await importCommand(t.deps, {
+      slug: 'my-app',
+      from: 'postgresql://u:p@db.x.supabase.co:5432/postgres',
+      storage: { endpoint: 'https://x', region: 'r', keyId: 'K', keySecret: 'S', bucket: 'b' },
+    });
+    const call = t.runner.calls.find((c) => c.argv.join(' ').includes('rclone'));
+    expect(call?.argv).not.toContain('K');
+    expect(call?.argv).not.toContain('S');
+    expect(call?.input).toContain('access_key_id = K');
+    expect(call?.input).toContain('secret_access_key = S');
+  });
+  it('fails with exit 2 when the dump container fails', async () => {
+    const runner = makeFakeRunner([{ match: /bash -s/, stdout: '---DUMP-FAILED---', fail: true }]);
+    const t = makeTestDeps({ runner });
+    t.store.state = upsertProject(t.store.state, fakeProject('my-app'));
+    await expect(
+      importCommand(t.deps, { slug: 'my-app', from: 'postgresql://u:p@h:5432/d' }),
+    ).rejects.toMatchObject({
+      exitCode: 2,
+      message: expect.stringContaining('pg_dump/psql failed'),
+    });
+  });
+  it('fails when the END marker is missing', async () => {
+    const runner = makeFakeRunner([{ match: /bash -s/, stdout: '---SCHEMA-ERRORS---\n' }]);
+    const t = makeTestDeps({ runner });
+    t.store.state = upsertProject(t.store.state, fakeProject('my-app'));
+    await expect(
+      importCommand(t.deps, { slug: 'my-app', from: 'postgresql://u:p@h:5432/d' }),
+    ).rejects.toThrow(/END marker/);
   });
 });
