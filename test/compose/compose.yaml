@@ -1,0 +1,41 @@
+services:
+  pg:
+    image: postgres:18
+    container_name: dbm-test-pg
+    environment:
+      POSTGRES_USER: test_admin
+      POSTGRES_PASSWORD: adminpw
+      POSTGRES_DB: test_db
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U test_admin -d test_db"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    networks: [dbmtest]
+  pgbouncer:
+    image: edoburu/pgbouncer:v1.26.0-p0
+    container_name: dbm-test-pgbouncer
+    ports: ["127.0.0.1:56432:6432"]
+    volumes:
+      - ./pgbouncer:/etc/pgbouncer:ro
+      - ./certs:/certs:ro
+    depends_on:
+      pg: { condition: service_healthy }
+    networks: [dbmtest]
+  garage:
+    image: dxflrs/garage:v2.4.1
+    container_name: dbm-test-garage
+    entrypoint: ["/garage"]
+    command: ["server", "--single-node"]
+    environment:
+      GARAGE_RPC_SECRET: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      GARAGE_ADMIN_TOKEN: testadmintoken
+    ports:
+      - "127.0.0.1:53900:3900"
+      - "127.0.0.1:53903:3903"
+    volumes:
+      - ./garage/garage.toml:/etc/garage.toml:ro
+    networks: [dbmtest]
+networks:
+  dbmtest:
+    name: dbmtest

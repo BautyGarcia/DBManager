@@ -10,3 +10,8 @@ dist/
 coverage/
 .vitest/
 *.tgz
+test/compose/pgbouncer/
+test/compose/certs/
+test/compose/garage/garage.toml
+test/compose/traefik/
+test/integration/.tmp/
