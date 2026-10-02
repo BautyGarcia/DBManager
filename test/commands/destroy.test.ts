@@ -1,21 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import { destroyCommand } from '../../src/commands/destroy.js';
-import { upsertProject } from '../../src/core/state.js';
-import { makeTestDeps } from '../helpers/fakes.js';
+import { makeFakeRunner } from '../helpers/fake-runner.js';
+import { makeTestDeps, seedProject } from '../helpers/fakes.js';
 import { fakeProject } from '../helpers/project.js';
 
-function seeded(status: 'running' | 'paused' = 'running') {
-  const t = makeTestDeps();
-  t.store.state = upsertProject(t.store.state, fakeProject('my-app', { status }));
-  t.garage.buckets.set('b1', {
-    id: 'b1',
-    globalAliases: ['my-app'],
-    bytes: 10,
-    objects: 2,
-    unfinishedUploads: 0,
-    websiteAccess: false,
-  });
-  t.garage.keys.set('GK1', { name: 'my-app-key' });
+function seeded(
+  status: 'running' | 'paused' = 'running',
+  runner?: ReturnType<typeof makeFakeRunner>,
+) {
+  const t = makeTestDeps(runner ? { runner } : {});
+  seedProject(t, fakeProject('my-app', { status }), { objects: 2 });
   return t;
 }
 
@@ -35,6 +29,9 @@ describe('destroy', () => {
     );
     expect(t.runner.uploads.at(-2)?.content).not.toContain('my-app');
     expect(t.garage.calls).toEqual(['deleteKey']);
+    expect(t.garage.keys.has('GK1')).toBe(false);
+    expect(t.dokploy.postgres.has('pg_1')).toBe(false);
+    expect(t.dokploy.backups.has('bk_1')).toBe(false);
     expect(t.garage.buckets.has('b1')).toBe(true);
     expect(t.store.state.projects['my-app']).toBeUndefined();
     expect(t.store.saves).toBe(1);
@@ -42,17 +39,105 @@ describe('destroy', () => {
       slug: 'my-app',
       appName: 'pg-my-app-abc123',
       pgMajor: 18,
+      bucketId: 'b1',
+      bucket: 'my-app',
     });
     expect(t.errLines.join('')).toMatch(/bucket my-app kept/);
   });
-  it('--purge-storage empties then deletes the bucket and removes the web router', async () => {
+  it('a kept public bucket stops being served: router file removed, aliases and website access off', async () => {
+    const t = makeTestDeps();
+    const p = fakeProject('my-app');
+    if (!p.storage) throw new Error('seed missing storage');
+    p.storage.publicBaseUrl = 'https://my-app.web.example.com';
+    p.storage.aliases = ['cdn.example.org'];
+    seedProject(t, p);
+    await destroyCommand(t.deps, {
+      slug: 'my-app',
+      purgeStorage: false,
+      yes: true,
+      confirmSlug: 'my-app',
+    });
+    const cmds = t.runner.calls.map((c) => c.argv.join(' '));
+    expect(cmds).toContain('rm -f /etc/dokploy/traefik/dynamic/dbm-web-my-app.yml');
+    expect(t.garage.calls).toEqual(['removeBucketAlias', 'updateBucket', 'deleteKey']);
+    expect(t.garage.inputs.updateBucket?.[0]).toEqual([
+      'b1',
+      { websiteAccess: { enabled: false } },
+    ]);
+    expect(t.garage.buckets.get('b1')?.websiteAccess).toBe(false);
+    expect(t.garage.buckets.has('b1')).toBe(true);
+  });
+  it('a kept private bucket still gets its (absent) router file removed, no Garage website call', async () => {
     const t = seeded();
-    const storage = t.store.state.projects['my-app']?.storage;
-    if (!storage) throw new Error('seed missing storage');
-    storage.publicBaseUrl = 'https://my-app.web.example.com';
+    await destroyCommand(t.deps, {
+      slug: 'my-app',
+      purgeStorage: false,
+      yes: true,
+      confirmSlug: 'my-app',
+    });
+    expect(t.runner.calls.map((c) => c.argv.join(' '))).toContain(
+      'rm -f /etc/dokploy/traefik/dynamic/dbm-web-my-app.yml',
+    );
+    expect(t.garage.calls).not.toContain('updateBucket');
+  });
+  it('a failed destroy is retryable: re-run tolerates already-removed resources and finishes', async () => {
+    const runner = makeFakeRunner([
+      { match: /^docker volume rm/, fail: true, stderr: 'Error: permission denied' },
+    ]);
+    const t = seeded('running', runner);
+    const first = await destroyCommand(t.deps, {
+      slug: 'my-app',
+      purgeStorage: true,
+      yes: true,
+      confirmSlug: 'my-app',
+    }).catch((e) => e);
+    expect(first).toMatchObject({ exitCode: 2 });
+    expect(first.message).toMatch(/failed at volume pg-my-app-abc123-data/);
+    expect(t.store.state.projects['my-app']).toBeDefined();
+    expect(t.dokploy.backups.has('bk_1')).toBe(false);
+    expect(t.dokploy.postgres.has('pg_1')).toBe(false);
+
     const bucket = t.garage.buckets.get('b1');
-    if (!bucket) throw new Error('seed missing bucket');
-    bucket.objects = 0; // emptyBucket is simulated by the runner; the fake bucket must be empty for deleteBucket
+    if (bucket) bucket.objects = 0; // the re-run's rclone delete is simulated by the runner
+    const ok = makeFakeRunner([]);
+    t.deps.ssh = ok.runner;
+    const r = await destroyCommand(t.deps, {
+      slug: 'my-app',
+      purgeStorage: true,
+      yes: true,
+      confirmSlug: 'my-app',
+    });
+    expect(r.warnings.join(' ')).toMatch(/backup schedule bk_1 not found.*no final backup/);
+    expect(t.errLines.join('')).toMatch(/backup schedule: already gone/);
+    expect(t.errLines.join('')).toMatch(/postgres service: already gone/);
+    expect(t.store.state.projects['my-app']).toBeUndefined();
+    expect(t.store.state.destroyed?.['my-app']).toBeDefined();
+    expect(t.garage.buckets.has('b1')).toBe(false);
+    expect(t.garage.keys.has('GK1')).toBe(false);
+  });
+  it('re-run after the key step failed: bucket and key already gone count as done', async () => {
+    const t = seeded();
+    t.garage.buckets.delete('b1');
+    t.garage.keys.delete('GK1');
+    await destroyCommand(t.deps, {
+      slug: 'my-app',
+      purgeStorage: true,
+      yes: true,
+      confirmSlug: 'my-app',
+    });
+    expect(t.errLines.join('')).toMatch(/bucket my-app: already gone/);
+    expect(t.errLines.join('')).toMatch(/key GK1: already gone/);
+    expect(t.runner.calls.some((c) => c.argv.join(' ').includes('rclone/rclone'))).toBe(false);
+    expect(t.store.state.projects['my-app']).toBeUndefined();
+    expect(t.store.state.destroyed?.['my-app']?.bucketId).toBeUndefined();
+  });
+  it('--purge-storage empties then deletes the bucket and removes the web router', async () => {
+    const t = makeTestDeps();
+    const p = fakeProject('my-app');
+    if (!p.storage) throw new Error('seed missing storage');
+    p.storage.publicBaseUrl = 'https://my-app.web.example.com';
+    // emptyBucket is simulated by the runner; the fake bucket must be empty for deleteBucket
+    seedProject(t, p, { objects: 0 });
     await destroyCommand(t.deps, {
       slug: 'my-app',
       purgeStorage: true,
@@ -60,14 +145,23 @@ describe('destroy', () => {
       confirmSlug: 'my-app',
     });
     const cmds = t.runner.calls.map((c) => c.argv.join(' '));
-    expect(
-      cmds.some((c) => c.includes('rclone/rclone') && c.includes('purge') && c.includes('my-app')),
-    ).toBe(true);
+    // `rclone delete` (objects only): `purge` would call DeleteBucket, which the read+write key may not.
+    expect(cmds).toContain(
+      'docker run --rm -i --network dokploy-network rclone/rclone:1 --config /dev/stdin delete garage:my-app',
+    );
+    expect(cmds.some((c) => c.includes('purge'))).toBe(false);
     const rc = t.runner.calls.find((c) => c.argv.join(' ').includes('rclone/rclone'));
     expect(rc?.input).toContain('sec');
     expect(rc?.argv.join(' ')).not.toContain('sec');
     expect(cmds).toContain('rm -f /etc/dokploy/traefik/dynamic/dbm-web-my-app.yml');
-    expect(t.garage.calls).toEqual(['cleanupIncompleteUploads', 'deleteBucket', 'deleteKey']);
+    expect(t.garage.calls).toEqual([
+      'updateBucket',
+      'getBucket',
+      'cleanupIncompleteUploads',
+      'deleteBucket',
+      'deleteKey',
+    ]);
+    expect(t.store.state.destroyed?.['my-app']?.bucketId).toBeUndefined();
   });
   it('a paused project skips the final backup with a warning (Review Focus 4)', async () => {
     const t = seeded('paused');

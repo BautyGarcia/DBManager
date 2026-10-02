@@ -1,6 +1,11 @@
 import { userError } from './exit.js';
 
-export const SLUG_RE = /^[a-z][a-z0-9-]{1,30}$/;
+/** DNS label / Garage bucket name: lowercase, starts with a letter, single hyphens between parts. */
+export const SLUG_RE = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
+export const SLUG_MIN = 3;
+export const SLUG_MAX = 31;
+/** Reserved for dbm's own throwaway projects (init's `dbm-smoke`). */
+export const INTERNAL_PREFIX = 'dbm-';
 export const RESERVED_SLUGS: ReadonlySet<string> = new Set([
   'dbm',
   'pgbouncer',
@@ -28,14 +33,19 @@ export interface DerivedNames {
   traefikWebFile: string;
 }
 
-export function validateSlug(slug: string): string {
-  if (!SLUG_RE.test(slug)) {
+export function validateSlug(slug: string, o: { internal?: boolean } = {}): string {
+  if (!SLUG_RE.test(slug) || slug.length < SLUG_MIN || slug.length > SLUG_MAX) {
     throw userError(
-      `invalid slug ${JSON.stringify(slug)}: must match ${SLUG_RE} (lowercase, start with a letter, 2-31 chars)`,
+      `invalid slug ${JSON.stringify(slug)}: must match ${SLUG_RE} and be ${SLUG_MIN}-${SLUG_MAX} chars (lowercase letters, digits and single hyphens; starts with a letter; no leading/trailing hyphen)`,
       'slug',
     );
   }
   if (RESERVED_SLUGS.has(slug)) throw userError(`slug ${JSON.stringify(slug)} is reserved`, 'slug');
+  if (!o.internal && slug.startsWith(INTERNAL_PREFIX))
+    throw userError(
+      `slug ${JSON.stringify(slug)}: the ${INTERNAL_PREFIX} prefix is reserved for dbm itself`,
+      'slug',
+    );
   return slug;
 }
 

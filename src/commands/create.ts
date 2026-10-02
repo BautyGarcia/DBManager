@@ -13,7 +13,7 @@ import {
   tuningSql,
   validateExtensions,
 } from '../core/sql.js';
-import { type Project, removeProject, upsertProject } from '../core/state.js';
+import { type Project, removeProject, removeTombstone, upsertProject } from '../core/state.js';
 import { parseMemory } from '../core/units.js';
 import { adminTarget, type Deps, waitUntil } from './context.js';
 import { applyPgbouncer } from './pgbouncer-apply.js';
@@ -26,6 +26,15 @@ export interface CreateOptions {
   extensions?: string[];
   storage?: boolean;
   corsOrigins?: string[];
+  /** Internal (init's smoke test): allow the reserved `dbm-` prefix. Not exposed in the CLI. */
+  internal?: boolean;
+  /** Internal (restore --as): keep the slug's tombstone; restore removes it once data is back. */
+  keepTombstone?: boolean;
+  /**
+   * Internal (restore --as <same slug>): the destroyed project's bucket was kept, so its global
+   * alias is taken. Skip CreateBucket and grant a fresh key on the existing bucket instead.
+   */
+  reuseBucket?: { bucketId: string; bucket: string };
 }
 
 export interface CreateResult {
@@ -81,7 +90,7 @@ async function waitDeployed(deps: Deps, postgresId: string): Promise<void> {
 }
 
 export async function createCommand(deps: Deps, o: CreateOptions): Promise<CreateResult> {
-  const slug = validateSlug(o.slug);
+  const slug = validateSlug(o.slug, o.internal ? { internal: true } : {});
   const names = deriveNames(slug);
   const extensions = validateExtensions([
     ...new Set([...DEFAULT_EXTENSIONS, ...(o.extensions ?? [])]),
@@ -93,6 +102,12 @@ export async function createCommand(deps: Deps, o: CreateOptions): Promise<Creat
 
   let state = await deps.store.loadState();
   const existing = state.projects[slug];
+  if (existing?.status === 'provisioning') {
+    throw userError(
+      `${slug} is half-created (status provisioning); run \`dbm destroy ${slug}\` then create again`,
+      'create',
+    );
+  }
   if (existing) {
     deps.io.err(`project ${slug} already exists (status: ${existing.status}); nothing to do\n`);
     return { project: existing, env: projectEnv(existing, deps.cfg), existed: true };
@@ -210,15 +225,25 @@ export async function createCommand(deps: Deps, o: CreateOptions): Promise<Creat
     }
 
     if (withStorage) {
-      deps.io.err('  storage: bucket, key, CORS\n');
-      const bucket = await deps.garage.createBucket(names.bucket);
-      undos.push({
-        what: `delete bucket ${names.bucket}`,
-        run: async () => {
-          await deps.garage.cleanupIncompleteUploads(bucket.id);
-          await deps.garage.deleteBucket(bucket.id);
-        },
-      });
+      const reuse = o.reuseBucket;
+      deps.io.err(
+        `  storage: ${reuse ? `existing bucket ${reuse.bucket}` : 'bucket'}, key, CORS\n`,
+      );
+      let bucket: { id: string };
+      if (reuse) {
+        // Kept data: a rollback must never delete this bucket.
+        bucket = { id: reuse.bucketId };
+      } else {
+        const created = await deps.garage.createBucket(names.bucket);
+        bucket = created;
+        undos.push({
+          what: `delete bucket ${names.bucket}`,
+          run: async () => {
+            await deps.garage.cleanupIncompleteUploads(created.id);
+            await deps.garage.deleteBucket(created.id);
+          },
+        });
+      }
       const key = await deps.garage.createKey(names.keyName);
       undos.push({
         what: `delete key ${key.accessKeyId}`,
@@ -239,7 +264,7 @@ export async function createCommand(deps: Deps, o: CreateOptions): Promise<Creat
       });
       project.storage = {
         bucketId: bucket.id,
-        bucket: names.bucket,
+        bucket: reuse?.bucket ?? names.bucket,
         keyId: key.accessKeyId,
         keySecret: key.secretAccessKey,
         corsOrigins,
@@ -266,6 +291,8 @@ export async function createCommand(deps: Deps, o: CreateOptions): Promise<Creat
 
     project.status = 'running';
     state = upsertProject(state, project);
+    // A fresh project under a destroyed slug: its dumps (new appName) are the ones restore must use.
+    if (!o.keepTombstone) state = removeTombstone(state, slug);
     await deps.store.saveState(state);
     deps.io.err(`created ${slug}\n`);
     return { project, env: projectEnv(project, deps.cfg), existed: false };

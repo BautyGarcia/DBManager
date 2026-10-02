@@ -18,7 +18,7 @@ import type { Io } from '../../src/cli.js';
 import type { Deps } from '../../src/commands/context.js';
 import { type Config, type ConfigInput, ConfigSchema } from '../../src/core/config.js';
 import { DbmError, ExitCode } from '../../src/core/exit.js';
-import { emptyState, type State } from '../../src/core/state.js';
+import { emptyState, type Project, type State, upsertProject } from '../../src/core/state.js';
 import { makeFakeRunner } from './fake-runner.js';
 
 export const testConfigInput: ConfigInput = {
@@ -38,6 +38,11 @@ export const testConfigInput: ConfigInput = {
 
 export function fail(step: string, msg = 'boom'): never {
   throw new DbmError(msg, ExitCode.RemoteFailure, step);
+}
+
+/** What the real APIs answer for an unknown id: a remote failure whose message says "not found". */
+export function notFound(step: string, what: string): never {
+  throw new DbmError(`${what} not found`, ExitCode.RemoteFailure, step);
 }
 
 export class FakeDokploy implements DokployClient {
@@ -168,6 +173,7 @@ export class FakeDokploy implements DokployClient {
   }
   async removePostgres(id: string) {
     this.guard('removePostgres');
+    if (!this.postgres.has(id)) notFound('dokploy.removePostgres', `postgres ${id}`);
     this.postgres.delete(id);
   }
   /** Compose services created so far; returned by getProject under the environment. */
@@ -233,13 +239,17 @@ export class FakeDokploy implements DokployClient {
   }
   async removeBackup(id: string) {
     this.guard('removeBackup');
+    if (!this.backups.has(id)) notFound('dokploy.removeBackup', `backup ${id}`);
     this.backups.delete(id);
   }
-  async manualBackup() {
+  async manualBackup(id: string) {
     this.guard('manualBackup');
+    this.record('manualBackup', id);
+    if (!this.backups.has(id)) notFound('dokploy.manualBackup', `backup ${id}`);
   }
-  async listBackupFiles() {
+  async listBackupFiles(destinationId: string, search: string) {
     this.guard('listBackupFiles');
+    this.record('listBackupFiles', destinationId, search);
     return this.files;
   }
 }
@@ -293,6 +303,9 @@ export class FakeGarage implements GarageAdmin {
   }
   async createBucket(alias: string) {
     this.guard('createBucket');
+    this.record('createBucket', alias);
+    if ([...this.buckets.values()].some((x) => x.globalAliases.includes(alias)))
+      fail('garage.createBucket', `garage CreateBucket: alias already exists: ${alias}`);
     const b = {
       id: `b_${++this.n}`,
       globalAliases: [alias],
@@ -316,7 +329,8 @@ export class FakeGarage implements GarageAdmin {
   }
   async createKey(name: string) {
     this.guard('createKey');
-    const id = `GK${++this.n}`;
+    let id = `GK${++this.n}`;
+    while (this.keys.has(id)) id = `GK${++this.n}`;
     this.keys.set(id, { name });
     return { accessKeyId: id, secretAccessKey: `S${id}` };
   }
@@ -344,12 +358,14 @@ export class FakeGarage implements GarageAdmin {
   }
   async deleteKey(id: string) {
     this.guard('deleteKey');
+    if (!this.keys.has(id)) notFound('garage.deleteKey', `garage DeleteKey: key ${id}`);
     this.keys.delete(id);
   }
   async deleteBucket(id: string) {
     this.guard('deleteBucket');
     const b = this.buckets.get(id);
-    if (b && b.objects > 0) fail('garage.deleteBucket', 'Bucket is not empty');
+    if (!b) notFound('garage.deleteBucket', `garage DeleteBucket: bucket ${id}`);
+    if (b.objects > 0) fail('garage.deleteBucket', 'Bucket is not empty');
     this.buckets.delete(id);
   }
   async cleanupIncompleteUploads() {
@@ -428,4 +444,49 @@ export function makeTestDeps(
     ...over,
   };
   return { deps, store, dokploy, pg, garage, runner, outLines, errLines };
+}
+
+/**
+ * Put `p` into state and register the remote resources it references (Dokploy service and
+ * backup schedule, Garage bucket and key) so the faithful fakes accept their ids.
+ */
+export function seedProject(
+  t: { store: MemoryStore; dokploy: FakeDokploy; garage: FakeGarage },
+  p: Project,
+  o: { objects?: number } = {},
+): Project {
+  t.store.state = upsertProject(t.store.state, p);
+  t.dokploy.postgres.set(p.dokploy.postgresId, {
+    postgresId: p.dokploy.postgresId,
+    appName: p.dokploy.appName,
+    applicationStatus: 'done',
+    databaseName: 'postgres',
+    databaseUser: p.postgres.adminRole,
+    status: 'done',
+    volumeExists: true,
+    running: p.status !== 'paused',
+  });
+  if (p.dokploy.backupId)
+    t.dokploy.backups.set(p.dokploy.backupId, {
+      schedule: '0 6 * * *',
+      prefix: `db/${p.slug}`,
+      destinationId: 'd1',
+      database: p.postgres.database,
+      databaseType: 'postgres',
+      postgresId: p.dokploy.postgresId,
+      enabled: p.status !== 'paused',
+      keepLatestCount: 35,
+    });
+  if (p.storage) {
+    t.garage.buckets.set(p.storage.bucketId, {
+      id: p.storage.bucketId,
+      globalAliases: [p.storage.bucket, ...p.storage.aliases],
+      bytes: 0,
+      objects: o.objects ?? 0,
+      unfinishedUploads: 0,
+      websiteAccess: Boolean(p.storage.publicBaseUrl),
+    });
+    t.garage.keys.set(p.storage.keyId, { name: `${p.slug}-key` });
+  }
+  return p;
 }

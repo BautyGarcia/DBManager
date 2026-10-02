@@ -593,7 +593,7 @@ cat ca.crt
         await destroySmoke();
       }
       io.err('smoke test: creating dbm-smoke...\n');
-      const created = await createCommand(deps, { slug: 'dbm-smoke' });
+      const created = await createCommand(deps, { slug: 'dbm-smoke', internal: true });
       let smokeError: unknown;
       try {
         const p = created.project;

@@ -13,10 +13,13 @@ import pg from 'pg';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { makeGarageAdmin } from '../../src/adapters/garage.js';
 import { makePostgresAdmin } from '../../src/adapters/postgres.js';
+import { restoreScript } from '../../src/commands/backup.js';
+import { emptyBucket } from '../../src/commands/destroy.js';
 import { renderPgbouncerIni, renderUserlist } from '../../src/core/pgbouncer.js';
 import { scramSha256Verifier } from '../../src/core/scram.js';
 import { createDatabaseSql, createRoleSql, extensionsSql } from '../../src/core/sql.js';
 import type { Project } from '../../src/core/state.js';
+import { makeTestDeps } from '../helpers/fakes.js';
 import { caPem, testConfig, testRunner } from './testcfg.js';
 
 const admin = { appName: 'dbm-test-pg', role: 'test_admin', database: 'test_db' };
@@ -170,6 +173,103 @@ export default defineConfig({
   });
 });
 
+describe('restore pipeline (C3)', () => {
+  const pgc = 'dbm-test-pg';
+  beforeAll(async () => {
+    await waitFor(() => pgAdmin.ping(admin));
+  });
+
+  it('restores a superuser-made dump (with extension entries) as the app role and exits 0', async () => {
+    await pgAdmin.runSql(
+      { ...admin, database: 'my_app' },
+      `CREATE TABLE restore_rows (id int PRIMARY KEY, v text NOT NULL, h bytea DEFAULT digest('x', 'sha256'));
+INSERT INTO restore_rows (id, v) VALUES (1, 'one'), (2, 'two'), (3, 'three');
+`,
+    );
+    // Same shape as Dokploy's backups: pg_dump -Fc as the superuser, gzipped.
+    await testRunner.run([
+      'docker',
+      'exec',
+      pgc,
+      'sh',
+      '-c',
+      'pg_dump -U test_admin -Fc my_app | gzip > /tmp/src.dump.gz',
+    ]);
+    const toc = await testRunner.run([
+      'docker',
+      'exec',
+      pgc,
+      'sh',
+      '-c',
+      'gunzip -c /tmp/src.dump.gz > /tmp/toc.dump && pg_restore -l /tmp/toc.dump; rm -f /tmp/toc.dump',
+    ]);
+    // The dump carries the extension entries the app role cannot drop or comment on.
+    expect(toc.stdout).toMatch(/EXTENSION - pgcrypto/);
+    // Fresh target owned by the app role; extensions installed by the admin, as `dbm create` does.
+    await pgAdmin.runSql(admin, createDatabaseSql('restored', 'my_app_app'));
+    await pgAdmin.runSql({ ...admin, database: 'restored' }, extensionsSql(['pgcrypto']));
+
+    const script = restoreScript({
+      network: testConfig.remote.dockerNetwork,
+      bucket: 'unused',
+      objectPath: 'unused',
+      container: pgc,
+      appRole: 'my_app_app',
+      database: 'restored',
+      source: `docker exec ${pgc} cat /tmp/src.dump.gz`,
+    });
+    const r = await testRunner.run(['sh', '-c', script], { timeoutMs: 120_000 });
+    expect(r.stderr).not.toMatch(/ERROR|errors ignored/);
+
+    const rows = await pgAdmin.runSql(
+      { ...admin, database: 'restored' },
+      "select string_agg(id || ':' || v, ',' order by id) from restore_rows;\nselect tableowner from pg_tables where tablename = 'restore_rows';\nselect count(*) from pg_extension where extname = 'pgcrypto';\n",
+    );
+    expect(rows.trim().split('\n')).toEqual(['1:one,2:two,3:three', 'my_app_app', '1']);
+    // Scratch files are removed from the container.
+    const left = await testRunner.run([
+      'docker',
+      'exec',
+      pgc,
+      'sh',
+      '-c',
+      'ls /tmp/dbm-restore.dump /tmp/dbm-restore.list 2>/dev/null | wc -l',
+    ]);
+    expect(left.stdout.trim()).toBe('0');
+
+    // Restoring again over existing objects (--clean --if-exists) also exits 0.
+    await testRunner.run(['sh', '-c', script], { timeoutMs: 120_000 });
+    const again = await pgAdmin.runSql(
+      { ...admin, database: 'restored' },
+      'select count(*) from restore_rows;',
+    );
+    expect(again.trim()).toBe('3');
+    await testRunner.run(['docker', 'exec', pgc, 'rm', '-f', '/tmp/src.dump.gz']);
+  });
+
+  it('a failing pg_restore makes the pipeline exit non-zero and still cleans up', async () => {
+    const script = restoreScript({
+      network: testConfig.remote.dockerNetwork,
+      bucket: 'unused',
+      objectPath: 'unused',
+      container: pgc,
+      appRole: 'my_app_app',
+      database: 'restored',
+      source: 'printf garbage | gzip',
+    });
+    await expect(testRunner.run(['sh', '-c', script])).rejects.toThrow();
+    const left = await testRunner.run([
+      'docker',
+      'exec',
+      pgc,
+      'sh',
+      '-c',
+      'ls /tmp/dbm-restore.dump /tmp/dbm-restore.list 2>/dev/null | wc -l',
+    ]);
+    expect(left.stdout.trim()).toBe('0');
+  });
+});
+
 describe('garage', () => {
   let s3: S3Client;
   let bucketId = '';
@@ -185,8 +285,6 @@ describe('garage', () => {
     const k = await garage.createKey('my-app-key');
     keyId = k.accessKeyId;
     await garage.allowBucketKey(bucketId, keyId, { read: true, write: true });
-    // Section 19 item 7: if this call fails with a schema error, read components.schemas in
-    // https://garagehq.deuxfleurs.fr/api/garage-admin-v2.json and fix the key casing in GarageCorsRule.
     await garage.updateBucket(bucketId, {
       corsRules: [
         {
@@ -245,5 +343,52 @@ describe('garage', () => {
     await garage.deleteBucket(bucketId);
     await garage.deleteKey(keyId);
     expect(await garage.getBucket({ globalAlias: 'my-app' })).toBeUndefined();
+  });
+});
+
+describe('destroy --purge-storage emptyBucket (C1)', () => {
+  beforeAll(async () => {
+    await waitFor(() => garage.health(), 120_000);
+  });
+
+  it('empties the bucket with the read+write project key, then the admin API deletes it', async () => {
+    const b = await garage.createBucket('purge-me');
+    const k = await garage.createKey('purge-me-key');
+    // Exactly what `dbm create` grants: read + write, no owner.
+    await garage.allowBucketKey(b.id, k.accessKeyId, { read: true, write: true });
+    const s3 = new S3Client({
+      endpoint: 'http://127.0.0.1:53900',
+      region: 'garage',
+      forcePathStyle: true,
+      requestChecksumCalculation: 'WHEN_REQUIRED',
+      responseChecksumValidation: 'WHEN_REQUIRED',
+      credentials: { accessKeyId: k.accessKeyId, secretAccessKey: k.secretAccessKey },
+    });
+    for (const key of ['a.txt', 'dir/b.txt'])
+      await s3.send(new PutObjectCommand({ Bucket: 'purge-me', Key: key, Body: key }));
+    expect((await s3.send(new ListObjectsV2Command({ Bucket: 'purge-me' }))).KeyCount).toBe(2);
+
+    const { deps } = makeTestDeps({ cfg: testConfig, ssh: testRunner, garage });
+    const p: Project = {
+      ...project('x'),
+      slug: 'purge-me',
+      storage: {
+        bucketId: b.id,
+        bucket: 'purge-me',
+        keyId: k.accessKeyId,
+        keySecret: k.secretAccessKey,
+        corsOrigins: ['*'],
+        aliases: [],
+      },
+    };
+    await emptyBucket(deps, p);
+
+    const after = await s3.send(new ListObjectsV2Command({ Bucket: 'purge-me' }));
+    expect(after.KeyCount ?? 0).toBe(0);
+    expect(after.Contents ?? []).toEqual([]);
+    await garage.cleanupIncompleteUploads(b.id);
+    await garage.deleteBucket(b.id);
+    expect(await garage.getBucket({ id: b.id })).toBeUndefined();
+    await garage.deleteKey(k.accessKeyId);
   });
 });

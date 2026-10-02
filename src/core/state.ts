@@ -46,6 +46,9 @@ export const TombstoneSchema = z.object({
   extensions: z.array(z.string()),
   memoryBytes: z.number().int().positive(),
   destroyedAt: z.string(),
+  /** Set when destroy kept the bucket (no --purge-storage); recreating the slug reuses it. */
+  bucketId: z.string().optional(),
+  bucket: z.string().optional(),
 });
 export type Tombstone = z.infer<typeof TombstoneSchema>;
 

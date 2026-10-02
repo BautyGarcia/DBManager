@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createCommand } from '../../src/commands/create.js';
 import { DbmError } from '../../src/core/exit.js';
-import { upsertProject } from '../../src/core/state.js';
+import { addTombstone, upsertProject } from '../../src/core/state.js';
 import { makeFakeRunner } from '../helpers/fake-runner.js';
 import { FakeDokploy, FakeGarage, makeTestDeps } from '../helpers/fakes.js';
 import { fakeProject } from '../helpers/project.js';
@@ -309,8 +309,8 @@ describe('createCommand', () => {
 
   it('a slug that is a prefix of an existing service is not a clash', async () => {
     const t = makeTestDeps();
-    t.dokploy.existingNames.add('pg-my-app');
-    const r = await createCommand(t.deps, { slug: 'my', storage: false });
+    t.dokploy.existingNames.add('pg-abc-app');
+    const r = await createCommand(t.deps, { slug: 'abc', storage: false });
     expect(r.existed).toBe(false);
   });
 
@@ -331,16 +331,115 @@ describe('createCommand', () => {
 
   it('--no-storage skips garage, --pg 17 pins the image, invalid extension is a user error', async () => {
     const t = makeTestDeps();
-    const r = await createCommand(t.deps, { slug: 'a1', storage: false, pg: 17 });
+    const r = await createCommand(t.deps, { slug: 'ab1', storage: false, pg: 17 });
     expect(r.env.S3_BUCKET).toBeUndefined();
     expect(t.garage.calls).toEqual([]);
-    expect(t.store.state.projects.a1?.pgMajor).toBe(17);
+    expect(t.store.state.projects.ab1?.pgMajor).toBe(17);
     expect(t.dokploy.inputs.createPostgres?.[0]?.[0]).toMatchObject({
       dockerImage: 'postgres:17',
       environmentId: 'env_1',
     });
-    await expect(createCommand(t.deps, { slug: 'a2', extensions: ['x;y'] })).rejects.toMatchObject({
+    await expect(createCommand(t.deps, { slug: 'ab2', extensions: ['x;y'] })).rejects.toMatchObject(
+      {
+        exitCode: 1,
+      },
+    );
+  });
+
+  it('re-running on a half-created (provisioning) project is a user error, not success', async () => {
+    const t = makeTestDeps();
+    t.store.state = upsertProject(t.store.state, fakeProject('my-app', { status: 'provisioning' }));
+    const err = await createCommand(t.deps, { slug: 'my-app' }).catch((e) => e);
+    expect(err).toBeInstanceOf(DbmError);
+    expect(err).toMatchObject({ exitCode: 1 });
+    expect(err.message).toBe(
+      'my-app is half-created (status provisioning); run `dbm destroy my-app` then create again',
+    );
+    expect(t.dokploy.calls).toEqual([]);
+  });
+
+  it('the dbm- prefix is refused for users and allowed for internal callers', async () => {
+    const t = makeTestDeps();
+    await expect(createCommand(t.deps, { slug: 'dbm-smoke' })).rejects.toMatchObject({
       exitCode: 1,
     });
+    expect(t.dokploy.calls).toEqual([]);
+    const r = await createCommand(t.deps, { slug: 'dbm-smoke', internal: true });
+    expect(r.project.slug).toBe('dbm-smoke');
+  });
+
+  const tomb = {
+    slug: 'my-app',
+    appName: 'pg-my-app-old999',
+    pgMajor: 18 as const,
+    extensions: [],
+    memoryBytes: 536870912,
+    destroyedAt: '2026-09-29T00:00:00Z',
+  };
+
+  it('creating a destroyed slug removes its tombstone', async () => {
+    const t = makeTestDeps();
+    t.store.state = addTombstone(t.store.state, tomb);
+    await createCommand(t.deps, { slug: 'my-app' });
+    expect(t.store.state.destroyed?.['my-app']).toBeUndefined();
+    expect(t.store.state.projects['my-app']?.status).toBe('running');
+  });
+
+  it('keepTombstone (restore --as) leaves the tombstone in place', async () => {
+    const t = makeTestDeps();
+    t.store.state = addTombstone(t.store.state, tomb);
+    await createCommand(t.deps, { slug: 'my-app', keepTombstone: true });
+    expect(t.store.state.destroyed?.['my-app']).toEqual(tomb);
+  });
+
+  it('reuseBucket skips CreateBucket, grants a new key on the kept bucket, sets CORS', async () => {
+    const t = makeTestDeps();
+    t.garage.buckets.set('bKept', {
+      id: 'bKept',
+      globalAliases: ['my-app'],
+      bytes: 5,
+      objects: 3,
+      unfinishedUploads: 0,
+      websiteAccess: false,
+    });
+    // A plain create cannot recreate the alias: the faithful fake rejects duplicates.
+    await expect(createCommand(t.deps, { slug: 'my-app' })).rejects.toThrow(/alias already exists/);
+    expect(t.garage.buckets.has('bKept')).toBe(true);
+
+    const r = await createCommand(t.deps, {
+      slug: 'my-app',
+      reuseBucket: { bucketId: 'bKept', bucket: 'my-app' },
+    });
+    expect(t.garage.calls.filter((c) => c === 'createBucket')).toHaveLength(1); // only the failed one
+    expect(r.project.storage).toMatchObject({ bucketId: 'bKept', bucket: 'my-app' });
+    const keyId = r.project.storage?.keyId;
+    expect(t.garage.inputs.allowBucketKey?.slice(-2)).toEqual([
+      ['bKept', keyId, { read: true, write: true }],
+      ['bKept', 'GKbackup', { read: true }],
+    ]);
+    expect(t.garage.inputs.updateBucket?.at(-1)?.[0]).toBe('bKept');
+    expect(r.env.S3_BUCKET).toBe('my-app');
+  });
+
+  it('a rollback after reuseBucket never deletes the kept bucket', async () => {
+    const t = makeTestDeps();
+    t.garage.buckets.set('bKept', {
+      id: 'bKept',
+      globalAliases: ['my-app'],
+      bytes: 5,
+      objects: 3,
+      unfinishedUploads: 0,
+      websiteAccess: false,
+    });
+    t.dokploy.failAt.add('createBackup');
+    await expect(
+      createCommand(t.deps, {
+        slug: 'my-app',
+        reuseBucket: { bucketId: 'bKept', bucket: 'my-app' },
+      }),
+    ).rejects.toMatchObject({ exitCode: 2 });
+    expect(t.garage.calls).not.toContain('deleteBucket');
+    expect(t.garage.buckets.has('bKept')).toBe(true);
+    expect(t.garage.calls).toContain('deleteKey');
   });
 });

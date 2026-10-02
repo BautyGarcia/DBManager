@@ -33,7 +33,18 @@ export async function requireConfirmation(
     throw userError('aborted', 'confirm');
 }
 
-/** Delete every object with the project's own key from a throwaway rclone container on the docker network. */
+/** "Already gone" answers from Dokploy, Garage or docker: a re-run of a half-finished destroy treats them as done. */
+export const NOT_FOUND_RE = /not found|404|NOT_FOUND|no such/i;
+
+export function isNotFound(e: unknown): boolean {
+  return NOT_FOUND_RE.test(e instanceof Error ? e.message : String(e));
+}
+
+/**
+ * Delete every object with the project's own key from a throwaway rclone container on the docker
+ * network. `rclone delete` removes objects only: `purge` would also call DeleteBucket, which needs
+ * the owner permission the project key does not have. The bucket itself is deleted via the admin API.
+ */
 export async function emptyBucket(deps: Deps, p: Project): Promise<void> {
   if (!p.storage) return;
   const conf = `[garage]\ntype = s3\nprovider = Other\nenv_auth = false\naccess_key_id = ${p.storage.keyId}\nsecret_access_key = ${p.storage.keySecret}\nendpoint = http://${deps.cfg.remote.garageContainer}:3900\nregion = garage\nforce_path_style = true\nno_check_bucket = true\n`;
@@ -48,7 +59,7 @@ export async function emptyBucket(deps: Deps, p: Project): Promise<void> {
       IMAGES.rclone,
       '--config',
       '/dev/stdin',
-      'purge',
+      'delete',
       `garage:${p.storage.bucket}`,
     ],
     { input: conf, timeoutMs: 30 * 60_000 },
@@ -66,7 +77,14 @@ export async function destroyCommand(deps: Deps, o: DestroyOptions): Promise<Des
     warnings.push(`${p.slug} is paused: no final backup was taken (resume first if you need one)`);
   } else if (p.dokploy.backupId) {
     deps.io.err('final backup...\n');
-    await deps.dokploy.manualBackup(p.dokploy.backupId);
+    try {
+      await deps.dokploy.manualBackup(p.dokploy.backupId);
+    } catch (e) {
+      if (!isNotFound(e)) throw e;
+      warnings.push(
+        `backup schedule ${p.dokploy.backupId} not found (removed by an earlier destroy attempt?): no final backup was taken`,
+      );
+    }
   }
 
   const remaining = removeProject(state, p.slug);
@@ -90,25 +108,35 @@ export async function destroyCommand(deps: Deps, o: DestroyOptions): Promise<Des
   let purgedStorage = false;
   const st = p.storage;
   if (st) {
+    // A kept bucket must stop being served publicly; with --purge-storage this also means a
+    // failed purge never leaves a public bucket behind.
+    steps.push({
+      label: 'web router',
+      run: async () => {
+        await deps.ssh.run([
+          'rm',
+          '-f',
+          `${deps.cfg.remote.traefikDynamicDir}/${names.traefikWebFile}`,
+        ]);
+        if (!st.publicBaseUrl) return;
+        for (const alias of st.aliases) await deps.garage.removeBucketAlias(st.bucketId, alias);
+        await deps.garage.updateBucket(st.bucketId, { websiteAccess: { enabled: false } });
+      },
+    });
     if (o.purgeStorage) {
       steps.push({
         label: `bucket ${st.bucket}`,
         run: async () => {
+          if (!(await deps.garage.getBucket({ id: st.bucketId }))) {
+            deps.io.err(`  bucket ${st.bucket}: already gone\n`);
+            return;
+          }
           deps.io.err('emptying and deleting bucket...\n');
           await emptyBucket(deps, p);
           await deps.garage.cleanupIncompleteUploads(st.bucketId);
           await deps.garage.deleteBucket(st.bucketId);
         },
       });
-      if (st.publicBaseUrl) {
-        steps.push({
-          label: 'web router',
-          run: () =>
-            deps.ssh
-              .run(['rm', '-f', `${deps.cfg.remote.traefikDynamicDir}/${names.traefikWebFile}`])
-              .then(() => undefined),
-        });
-      }
       purgedStorage = true;
     } else {
       deps.io.err(`bucket ${st.bucket} kept (use --purge-storage to delete it)\n`);
@@ -123,6 +151,11 @@ export async function destroyCommand(deps: Deps, o: DestroyOptions): Promise<Des
       done.push(step.label);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      if (isNotFound(e)) {
+        deps.io.err(`  ${step.label}: already gone (${msg.split('\n')[0]})\n`);
+        done.push(step.label);
+        continue;
+      }
       const notAttempted = steps.slice(i + 1).map((x) => x.label);
       throw new DbmError(
         `destroy of ${p.slug} failed at ${step.label}: ${msg}. ` +
@@ -142,6 +175,8 @@ export async function destroyCommand(deps: Deps, o: DestroyOptions): Promise<Des
       extensions: p.postgres.extensions,
       memoryBytes: p.postgres.memoryBytes,
       destroyedAt: deps.now().toISOString(),
+      // A kept bucket is reused by `dbm restore <slug> <id> --as <slug>` (its alias cannot be re-created).
+      ...(st && !purgedStorage ? { bucketId: st.bucketId, bucket: st.bucket } : {}),
     }),
   );
 

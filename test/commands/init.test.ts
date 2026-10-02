@@ -8,6 +8,7 @@ import {
   FakeGarage,
   MemoryStore,
   makeTestDeps,
+  seedProject,
   testConfigInput,
 } from '../helpers/fakes.js';
 import { fakeProject } from '../helpers/project.js';
@@ -262,7 +263,7 @@ describe('init', () => {
   it('removes a leftover dbm-smoke before re-running the smoke step', async () => {
     const h = harness();
     await h.store.saveConfig(testConfigInput);
-    h.store.state.projects['dbm-smoke'] = fakeProject('dbm-smoke');
+    seedProject(h, fakeProject('dbm-smoke'));
     h.store.progress = {
       done: Object.fromEntries(INIT_STEPS.filter((s) => s !== 'smoke').map((s) => [s, true])),
       values: {},

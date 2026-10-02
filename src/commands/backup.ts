@@ -59,17 +59,40 @@ export interface RestoreScriptInput {
   container: string;
   appRole: string;
   database: string;
+  /**
+   * Shell command that writes the gzipped dump to stdout. Defaults to `rclone cat` of the object
+   * from the dumps destination (credentials on stdin); the integration test feeds a local file.
+   */
+  source?: string;
 }
 
-/** Pipeline run on the VPS. Credentials are never part of it; they arrive on stdin. */
+export const RESTORE_DUMP = '/tmp/dbm-restore.dump';
+export const RESTORE_LIST = '/tmp/dbm-restore.list';
+
+/**
+ * Pipeline run on the VPS. Credentials are never part of it; they arrive on stdin.
+ *
+ * Dumps are taken by the superuser and carry `CREATE EXTENSION` / `COMMENT ON EXTENSION`
+ * entries (plus `DROP EXTENSION` under --clean). The app role does not own the extensions
+ * (create installed them as admin), so those entries are filtered out of the TOC list and
+ * comments are skipped; everything else is restored as the app role.
+ */
 export function restoreScript(i: RestoreScriptInput): string {
-  const pipeline = [
-    `docker run --rm -i --network ${quote(i.network)} ${quote(IMAGES.rclone)} --config /dev/stdin cat ${quote(`dst:${i.bucket}/${i.objectPath}`)}`,
-    'gunzip',
-    `docker exec -i ${quote(i.container)} pg_restore -U ${quote(i.appRole)} -d ${quote(i.database)} -O --clean --if-exists`,
-  ].join(' | ');
-  // pipefail is supported by dash 0.5.12 (Ubuntu 24.04 /bin/sh).
-  return `set -o pipefail; ${pipeline}`;
+  const source =
+    i.source ??
+    `docker run --rm -i --network ${quote(i.network)} ${quote(IMAGES.rclone)} --config /dev/stdin cat ${quote(`dst:${i.bucket}/${i.objectPath}`)}`;
+  const c = quote(i.container);
+  const dump = quote(RESTORE_DUMP);
+  const list = quote(RESTORE_LIST);
+  const filter = `pg_restore -l ${dump} | grep -Ev ${quote('^;|[[:space:]]EXTENSION[[:space:]]|COMMENT - EXTENSION')} > ${list}`;
+  return [
+    // pipefail is supported by dash 0.5.12 (Ubuntu 24.04 /bin/sh).
+    'set -e -o pipefail',
+    `trap ${quote(`rc=$?; docker exec ${c} rm -f ${dump} ${list}; exit $rc`)} EXIT`,
+    `${source} | gunzip | docker exec -i ${c} sh -c ${quote(`cat > ${dump}`)}`,
+    `docker exec ${c} sh -c ${quote(filter)}`,
+    `docker exec ${c} pg_restore -U ${quote(i.appRole)} -d ${quote(i.database)} -O --clean --if-exists --no-comments -L ${list} ${dump}`,
+  ].join('\n');
 }
 
 export async function restoreCommand(
@@ -94,8 +117,12 @@ export async function restoreCommand(
   if (o.as && state.projects[o.as] && !retry)
     throw userError(`${o.as} already exists; restore without --as to restore in place`, 'restore');
 
-  // Dumps live under the original appName; a tombstone always wins over a recreated project.
-  const src = tomb
+  // Dumps live under the appName the data was written by. The tombstone (the destroyed
+  // project's appName) is used only on the --as path: recreating a destroyed slug, or retrying
+  // that recreate. Without --as the live project wins, even if the slug was destroyed and
+  // re-created earlier (create removes the tombstone, but a stale one must never win).
+  const useTomb = Boolean(o.as && tomb && (!live || o.as === o.slug));
+  const src = useTomb
     ? tomb
     : live
       ? {
@@ -124,11 +151,24 @@ export async function restoreCommand(
   let target = inPlace ? live : undefined;
   if (!inPlace && o.as) {
     deps.io.err(`creating ${o.as} for restore...\n`);
+    // Recreating the destroyed slug: its kept bucket still holds the global alias, so reuse it.
+    let reuseBucket: { bucketId: string; bucket: string } | undefined;
+    if (useTomb && tomb?.bucketId && tomb.bucket && o.as === o.slug) {
+      if (await deps.garage.getBucket({ id: tomb.bucketId })) {
+        reuseBucket = { bucketId: tomb.bucketId, bucket: tomb.bucket };
+        deps.io.err(`  reusing kept bucket ${tomb.bucket}\n`);
+      } else {
+        deps.io.err(`  kept bucket ${tomb.bucket} no longer exists; creating a new one\n`);
+      }
+    }
     const created = await createCommand(deps, {
       slug: o.as,
       pg: src.pgMajor,
       extensions: src.extensions,
       memory: String(src.memoryBytes),
+      // The tombstone stays until the data is restored, so a failed restore can be retried.
+      keepTombstone: true,
+      ...(reuseBucket ? { reuseBucket } : {}),
     });
     target = created.project;
   }
@@ -148,7 +188,7 @@ export async function restoreCommand(
   });
   deps.io.err(`restoring ${file.Name} into ${target.slug}...\n`);
   await deps.ssh.run(['sh', '-c', script], { input: rcloneConf, timeoutMs: 30 * 60_000 });
-  if (tomb && o.as === o.slug) {
+  if (useTomb && o.as === o.slug) {
     await deps.store.saveState(removeTombstone(await deps.store.loadState(), o.slug));
   }
   deps.io.err('restore complete\n');
