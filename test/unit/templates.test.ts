@@ -24,6 +24,11 @@ describe('templates/nextjs', () => {
     expect(s).toContain('responseChecksumValidation: "WHEN_REQUIRED"');
     expect(s).toContain('forcePathStyle: true');
   });
+  it('auth.ts falls back to a localhost baseURL for local dev', () => {
+    expect(readFileSync('templates/nextjs/lib/auth.ts', 'utf8')).toContain(
+      '"http://localhost:3000"',
+    );
+  });
   it('vercel.json pins gru1', () => {
     expect(JSON.parse(readFileSync('templates/nextjs/vercel.json', 'utf8'))).toEqual({
       $schema: 'https://openapi.vercel.sh/vercel.json',

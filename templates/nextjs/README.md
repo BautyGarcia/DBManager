@@ -7,5 +7,7 @@ Copy into a Next.js 16 App Router project, then:
     npx auth@latest generate --config lib/auth.ts --output lib/auth-schema.ts -y
     npx drizzle-kit push        # uses DATABASE_URL_SESSION
 
+Running `auth generate` needs a base URL: set `BETTER_AUTH_URL=http://localhost:3000` for that step if your .env lacks one.
+
 Keep `pg` out of the project: drizzle-kit prefers it over postgres.js when both are installed.
 Add `"regions": ["gru1"]` via vercel.json (or vercel.ts if you already have one; only one config file is allowed).

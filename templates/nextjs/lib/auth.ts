@@ -4,15 +4,16 @@ import { nextCookies } from "better-auth/next-js";
 import * as authSchema from "./auth-schema"; // generated: npx auth@latest generate --config lib/auth.ts --output lib/auth-schema.ts -y
 import { db } from "./db";
 
+const vercelHosts = [process.env.VERCEL_URL, process.env.VERCEL_BRANCH_URL].filter((h): h is string => Boolean(h));
+
 export const auth = betterAuth({
   // Explicit baseURL prevents request-derived baseURL poisoning. Production: BETTER_AUTH_URL=https://app.example.com.
   // Previews: exact Vercel hosts only; never "*.vercel.app".
   baseURL: process.env.BETTER_AUTH_URL
     ? process.env.BETTER_AUTH_URL
-    : {
-        allowedHosts: [process.env.VERCEL_URL, process.env.VERCEL_BRANCH_URL].filter((h): h is string => Boolean(h)),
-        protocol: "https",
-      },
+    : vercelHosts.length
+      ? { allowedHosts: vercelHosts, protocol: "https" }
+      : "http://localhost:3000", // local development; dbm env leaves BETTER_AUTH_URL empty
   secret: process.env.BETTER_AUTH_SECRET,
   database: drizzleAdapter(db, { provider: "pg", schema: authSchema }),
   emailAndPassword: {
