@@ -3,6 +3,26 @@
   "version": "0.1.0",
   "description": "Self-hosted per-project Postgres + S3 on one VPS, managed from the CLI (dbm).",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bautygarcia/db-manager.git"
+  },
+  "homepage": "https://github.com/bautygarcia/db-manager#readme",
+  "bugs": {
+    "url": "https://github.com/bautygarcia/db-manager/issues"
+  },
+  "keywords": [
+    "postgres",
+    "pgbouncer",
+    "self-hosted",
+    "supabase-alternative",
+    "dokploy",
+    "garage",
+    "s3",
+    "cli",
+    "vps",
+    "nextjs"
+  ],
   "type": "module",
   "engines": {
     "node": ">=22.12.0"
