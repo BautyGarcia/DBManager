@@ -120,7 +120,6 @@ export function makeDokployClient(o: DokployClientOptions): DokployClient {
             name: input.name,
             metadata: { organizationId: input.organizationId },
             rateLimitEnabled: false,
-            expiresIn: null,
           },
         }),
       );
