@@ -5,6 +5,7 @@ import { type Deps, makeDeps } from './commands/context.js';
 import { createCommand } from './commands/create.js';
 import { envCommand } from './commands/env.js';
 import { formatTable, listCommand } from './commands/list.js';
+import { pauseCommand, resumeCommand } from './commands/pause.js';
 import { formatEnvBlock } from './core/env.js';
 import { DbmError, ExitCode, userError } from './core/exit.js';
 import { VERSION } from './version.js';
@@ -127,6 +128,21 @@ export function buildProgram(io: Io, depsFactory: DepsFactory = defaultDepsFacto
       const env = await envCommand(deps, slug);
       emit(io, g, env, formatEnvBlock(env));
     });
+
+  for (const [name, fn] of [
+    ['pause', pauseCommand],
+    ['resume', resumeCommand],
+  ] as const) {
+    program
+      .command(name)
+      .description(`${name} a project's Postgres container and its backup schedule`)
+      .argument('<slug>')
+      .action(async function (this: Command, slug: string) {
+        const g = globals(this);
+        const p = await fn(await depsFactory(io), slug);
+        emit(io, g, { slug: p.slug, status: p.status }, `${p.slug}: ${p.status}\n`);
+      });
+  }
 
   return program;
 }

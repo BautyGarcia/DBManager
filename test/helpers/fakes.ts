@@ -213,6 +213,7 @@ export class FakeDokploy implements DokployClient {
   }
   async updateBackup(input: BackupInput & { backupId: string }) {
     this.guard('updateBackup');
+    this.record('updateBackup', input);
     this.backups.set(input.backupId, input);
   }
   async removeBackup(id: string) {
