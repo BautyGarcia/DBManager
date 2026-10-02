@@ -183,12 +183,20 @@ export function buildProgram(io: Io, depsFactory: DepsFactory = defaultDepsFacto
     .argument('<slug>')
     .argument('<backup-id>')
     .option('--as <newslug>', 'restore into a freshly created project')
-    .action(async function (this: Command, slug: string, backupId: string, opts: { as?: string }) {
+    .option('--confirm <slug>', 'required with --yes for in-place restores')
+    .action(async function (
+      this: Command,
+      slug: string,
+      backupId: string,
+      opts: { as?: string; confirm?: string },
+    ) {
       const g = globals(this);
       const r = await restoreCommand(await depsFactory(io), {
         slug,
         backupId,
+        yes: g.yes,
         ...(opts.as ? { as: opts.as } : {}),
+        ...(opts.confirm ? { confirmSlug: opts.confirm } : {}),
       });
       emit(io, g, r, `restored ${r.file} into ${r.target}\n`);
     });

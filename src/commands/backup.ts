@@ -1,3 +1,4 @@
+import { quote } from 'shlex';
 import type { BackupFile } from '../adapters/types.js';
 import { IMAGES } from '../core/compose.js';
 import { userError } from '../core/exit.js';
@@ -5,6 +6,7 @@ import { deriveNames } from '../core/naming.js';
 import { getProject, removeTombstone } from '../core/state.js';
 import type { Deps } from './context.js';
 import { createCommand } from './create.js';
+import { requireConfirmation } from './destroy.js';
 
 export function pickBackup(files: BackupFile[], backupId: string): BackupFile {
   if (!files.length) throw userError('no backups found for this project', 'restore');
@@ -46,6 +48,8 @@ export interface RestoreOptions {
   slug: string;
   backupId: string;
   as?: string;
+  yes: boolean;
+  confirmSlug?: string;
 }
 
 export interface RestoreScriptInput {
@@ -60,9 +64,9 @@ export interface RestoreScriptInput {
 /** Pipeline run on the VPS. Credentials are never part of it; they arrive on stdin. */
 export function restoreScript(i: RestoreScriptInput): string {
   const pipeline = [
-    `docker run --rm -i --network ${i.network} ${IMAGES.rclone} --config /dev/stdin cat dst:${i.bucket}/${i.objectPath}`,
+    `docker run --rm -i --network ${quote(i.network)} ${quote(IMAGES.rclone)} --config /dev/stdin cat ${quote(`dst:${i.bucket}/${i.objectPath}`)}`,
     'gunzip',
-    `docker exec -i ${i.container} pg_restore -U ${i.appRole} -d ${i.database} -O --clean --if-exists`,
+    `docker exec -i ${quote(i.container)} pg_restore -U ${quote(i.appRole)} -d ${quote(i.database)} -O --clean --if-exists`,
   ].join(' | ');
   // pipefail is supported by dash 0.5.12 (Ubuntu 24.04 /bin/sh).
   return `set -o pipefail; ${pipeline}`;
@@ -80,28 +84,45 @@ export async function restoreCommand(
       `${JSON.stringify(o.slug)} is neither a live project nor a destroyed one in state (run \`dbm list\`)`,
       'restore',
     );
-  if (o.as && state.projects[o.as])
-    throw userError(`${o.as} already exists; restore without --as to restore in place`, 'restore');
-  if (!live && !o.as)
+  if (!o.as && !live)
     throw userError(
       `${o.slug} was destroyed; use --as <newslug> (same slug allowed) to recreate it from a dump`,
       'restore',
     );
-  const src = live
-    ? {
-        slug: live.slug,
-        appName: live.dokploy.appName,
-        pgMajor: live.pgMajor,
-        extensions: live.postgres.extensions,
-        memoryBytes: live.postgres.memoryBytes,
-      }
-    : tomb;
+  // Retry of an interrupted tombstone restore: the project already exists from the earlier attempt.
+  const retry = Boolean(o.as && o.as === o.slug && tomb && live);
+  if (o.as && state.projects[o.as] && !retry)
+    throw userError(`${o.as} already exists; restore without --as to restore in place`, 'restore');
+
+  // Dumps live under the original appName; a tombstone always wins over a recreated project.
+  const src = tomb
+    ? tomb
+    : live
+      ? {
+          slug: live.slug,
+          appName: live.dokploy.appName,
+          pgMajor: live.pgMajor,
+          extensions: live.postgres.extensions,
+          memoryBytes: live.postgres.memoryBytes,
+        }
+      : undefined;
   if (!src) throw userError(`${o.slug} not found`, 'restore');
   const file = pickBackup(await listFiles(deps, src), o.backupId);
+
+  // Overwriting an existing database needs the same confirmation as destroy.
+  const inPlace = !o.as || retry;
+  const targetSlug = o.as ?? o.slug;
+  if (inPlace) {
+    await requireConfirmation(
+      deps,
+      { slug: targetSlug, yes: o.yes, ...(o.confirmSlug ? { confirmSlug: o.confirmSlug } : {}) },
+      'overwrite the database of',
+    );
+  }
   const dest = await deps.dokploy.getDestination(deps.cfg.dumpsDestinationId);
 
-  let target = live;
-  if (o.as) {
+  let target = inPlace ? live : undefined;
+  if (!inPlace && o.as) {
     deps.io.err(`creating ${o.as} for restore...\n`);
     const created = await createCommand(deps, {
       slug: o.as,
