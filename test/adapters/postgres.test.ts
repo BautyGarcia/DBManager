@@ -52,7 +52,7 @@ describe('PostgresAdmin', () => {
       { match: /docker exec/, fail: true, stderr: 'FATAL' },
       {
         match:
-          /docker run --rm --network dokploy-network postgres:18 psql postgresql:\/\/u:p@dbm-pgbouncer:6432\/my-app -Atc select 1/,
+          /docker run --rm -i --network dokploy-network postgres:18 sh -c psql "\$\(cat\)" -Atc "select 1"/,
         stdout: '1',
       },
     ]);
@@ -61,7 +61,12 @@ describe('PostgresAdmin', () => {
       clientImage: 'postgres:18',
     });
     expect(await pg.ping(target)).toBe(false);
-    expect(await pg.pingViaPgbouncer('postgresql://u:p@dbm-pgbouncer:6432/my-app')).toBe(true);
+    const url = 'postgresql://u:p@dbm-pgbouncer:6432/my-app';
+    expect(await pg.pingViaPgbouncer(url)).toBe(true);
+    const probe = f.calls[f.calls.length - 1];
+    expect(probe?.input).toBe(url);
+    expect(probe?.argv.join(' ')).not.toContain('u:p@');
+    expect(probe?.argv).not.toContain(url);
   });
   it('throws a remote error naming the container when none is found', async () => {
     const f = makeFakeRunner([{ match: /docker ps/, stdout: '' }]);

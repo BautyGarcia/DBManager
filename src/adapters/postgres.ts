@@ -64,15 +64,15 @@ export function makePostgresAdmin(runner: SshRunner, o: PostgresAdminOptions): P
             'docker',
             'run',
             '--rm',
+            '-i',
             '--network',
             o.network,
             o.clientImage,
-            'psql',
-            url,
-            '-Atc',
-            'select 1',
+            'sh',
+            '-c',
+            'psql "$(cat)" -Atc "select 1"',
           ],
-          { timeoutMs: 90_000 },
+          { input: url, timeoutMs: 90_000 },
         );
         return r.stdout.trim() === '1';
       } catch {
