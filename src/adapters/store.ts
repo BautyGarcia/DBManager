@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { chmod, mkdir, readdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { chmod, link, mkdir, readdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { type Config, type ConfigInput, ConfigSchema } from '../core/config.js';
@@ -20,6 +20,19 @@ export interface StateStore {
   saveState(state: State): Promise<void>;
   loadInitProgress(): Promise<InitProgress>;
   saveInitProgress(p: InitProgress): Promise<void>;
+  /** Serialize dbm commands on this machine; throws a user error if another one holds the lock. */
+  acquireLock(): Promise<void>;
+  releaseLock(): Promise<void>;
+}
+
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    // EPERM: the process exists but belongs to someone else.
+    return (e as NodeJS.ErrnoException).code !== 'ESRCH';
+  }
 }
 
 const KEEP_BACKUPS = 10;
@@ -52,6 +65,7 @@ export function makeFileStore(dir = join(homedir(), '.dbm')): StateStore {
   const configFile = join(dir, 'config.json');
   const stateFile = join(dir, 'state.json');
   const progressFile = join(dir, 'init-progress.json');
+  const lockFile = join(dir, 'lock');
 
   async function backupState(): Promise<void> {
     const current = await readJson(stateFile);
@@ -99,6 +113,40 @@ export function makeFileStore(dir = join(homedir(), '.dbm')): StateStore {
     },
     async saveInitProgress(p) {
       await writeJsonAtomic(progressFile, p);
+    },
+    async acquireLock() {
+      await mkdir(dir, { recursive: true, mode: 0o700 });
+      for (let attempt = 0; attempt < 5; attempt++) {
+        // Write the pid first, then hard-link it into place: the lock never exists without its pid.
+        const tmp = join(dir, `.lock.${process.pid}.${randomBytes(4).toString('hex')}`);
+        await writeFile(tmp, `${process.pid}\n`, { mode: 0o600, flag: 'wx' });
+        try {
+          await link(tmp, lockFile);
+          return;
+        } catch (e) {
+          if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+        } finally {
+          await unlink(tmp).catch(() => {});
+        }
+        const raw = await readFile(lockFile, 'utf8').catch((e: NodeJS.ErrnoException) => {
+          if (e.code === 'ENOENT') return undefined; // released meanwhile: retry
+          throw e;
+        });
+        if (raw === undefined) continue;
+        const pid = Number.parseInt(raw.trim(), 10);
+        if (Number.isInteger(pid) && pid > 0 && pidAlive(pid))
+          throw userError(
+            `another dbm command is running (pid ${pid}); wait for it, or remove ${lockFile} if that process is not dbm`,
+            'lock',
+          );
+        await unlink(lockFile).catch(() => {}); // stale: its process is gone
+      }
+      throw userError(`could not acquire ${lockFile}`, 'lock');
+    },
+    async releaseLock() {
+      const raw = await readFile(lockFile, 'utf8').catch(() => undefined);
+      if (raw !== undefined && Number.parseInt(raw.trim(), 10) === process.pid)
+        await unlink(lockFile).catch(() => {});
     },
   };
 }

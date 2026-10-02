@@ -410,6 +410,8 @@ export class MemoryStore implements StateStore {
   async saveInitProgress(p: InitProgress) {
     this.progress = structuredClone(p);
   }
+  async acquireLock() {}
+  async releaseLock() {}
 }
 
 export function makeTestDeps(

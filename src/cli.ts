@@ -1,6 +1,6 @@
 import { Command, CommanderError } from 'commander';
 import pc from 'picocolors';
-import { makeFileStore } from './adapters/store.js';
+import { makeFileStore, type StateStore } from './adapters/store.js';
 import { backupCommand, restoreCommand } from './commands/backup.js';
 import { type Deps, makeDeps } from './commands/context.js';
 import { createCommand } from './commands/create.js';
@@ -36,6 +36,16 @@ export type DepsFactory = (io: Io) => Promise<Deps>;
 
 export const defaultDepsFactory: DepsFactory = (io) => makeDeps(makeFileStore(), io);
 
+/** Every command holds ~/.dbm/lock for its whole run so concurrent commands cannot lose state writes. */
+export async function withLock<T>(store: StateStore, fn: () => Promise<T>): Promise<T> {
+  await store.acquireLock();
+  try {
+    return await fn();
+  } finally {
+    await store.releaseLock();
+  }
+}
+
 function globals(cmd: Command): GlobalOpts {
   return cmd.optsWithGlobals<GlobalOpts>();
 }
@@ -50,9 +60,13 @@ export function buildProgram(io: Io, depsFactory: DepsFactory = defaultDepsFacto
     .description('Personal database platform on one VPS')
     .option('--json', 'machine-readable output', false)
     .option('--yes', 'skip confirmations (destructive commands then need --confirm <slug>)', false)
-    .enablePositionalOptions()
     .exitOverride()
     .configureOutput({ writeOut: io.out, writeErr: io.err });
+
+  const withDeps = async <T>(fn: (deps: Deps) => Promise<T>): Promise<T> => {
+    const deps = await depsFactory(io);
+    return withLock(deps.store, () => fn(deps));
+  };
 
   program
     .command('create')
@@ -79,26 +93,27 @@ export function buildProgram(io: Io, depsFactory: DepsFactory = defaultDepsFacto
       const g = globals(this);
       const pg = Number(opts.pg);
       if (pg !== 17 && pg !== 18) throw userError('--pg must be 17 or 18', 'create');
-      const deps = await depsFactory(io);
-      const r = await createCommand(deps, {
-        slug,
-        memory: opts.memory,
-        pg,
-        ...(opts.extensions
-          ? {
-              extensions: opts.extensions
-                .split(',')
-                .map((s) => s.trim())
-                .filter(Boolean),
-            }
-          : {}),
-        storage: opts.storage,
-        ...(opts.corsOrigin ? { corsOrigins: opts.corsOrigin } : {}),
-      });
+      const r = await withDeps((deps) =>
+        createCommand(deps, {
+          slug,
+          memory: opts.memory,
+          pg,
+          ...(opts.extensions
+            ? {
+                extensions: opts.extensions
+                  .split(',')
+                  .map((s) => s.trim())
+                  .filter(Boolean),
+              }
+            : {}),
+          storage: opts.storage,
+          ...(opts.corsOrigin ? { corsOrigins: opts.corsOrigin } : {}),
+        }),
+      );
       emit(
         io,
         g,
-        { slug: r.project.slug, existed: r.existed, env: r.env },
+        { slug: r.project.slug, status: r.project.status, existed: r.existed, env: r.env },
         `${formatEnvBlock(r.env)}\n# Pin Vercel functions to gru1 (templates/nextjs/vercel.json).\n`,
       );
     });
@@ -108,8 +123,7 @@ export function buildProgram(io: Io, depsFactory: DepsFactory = defaultDepsFacto
     .description('List projects with memory, disk, storage and last backup')
     .action(async function (this: Command) {
       const g = globals(this);
-      const deps = await depsFactory(io);
-      const rows = await listCommand(deps);
+      const rows = await withDeps(listCommand);
       const table = [
         ['SLUG', 'STATUS', 'PG', 'MEMORY', 'VOLUME', 'STORAGE', 'LAST BACKUP', 'CREATED'],
         ...rows.map((r) => [
@@ -132,8 +146,7 @@ export function buildProgram(io: Io, depsFactory: DepsFactory = defaultDepsFacto
     .argument('<slug>')
     .action(async function (this: Command, slug: string) {
       const g = globals(this);
-      const deps = await depsFactory(io);
-      const env = await envCommand(deps, slug);
+      const env = await withDeps((deps) => envCommand(deps, slug));
       emit(io, g, env, formatEnvBlock(env));
     });
 
@@ -147,7 +160,7 @@ export function buildProgram(io: Io, depsFactory: DepsFactory = defaultDepsFacto
       .argument('<slug>')
       .action(async function (this: Command, slug: string) {
         const g = globals(this);
-        const p = await fn(await depsFactory(io), slug);
+        const p = await withDeps((deps) => fn(deps, slug));
         emit(io, g, { slug: p.slug, status: p.status }, `${p.slug}: ${p.status}\n`);
       });
   }
@@ -164,12 +177,14 @@ export function buildProgram(io: Io, depsFactory: DepsFactory = defaultDepsFacto
       opts: { purgeStorage: boolean; confirm?: string },
     ) {
       const g = globals(this);
-      const r = await destroyCommand(await depsFactory(io), {
-        slug,
-        purgeStorage: opts.purgeStorage,
-        yes: g.yes,
-        ...(opts.confirm ? { confirmSlug: opts.confirm } : {}),
-      });
+      const r = await withDeps((deps) =>
+        destroyCommand(deps, {
+          slug,
+          purgeStorage: opts.purgeStorage,
+          yes: g.yes,
+          ...(opts.confirm ? { confirmSlug: opts.confirm } : {}),
+        }),
+      );
       emit(io, g, r, `destroyed ${r.slug}\n`);
     });
 
@@ -202,15 +217,17 @@ export function buildProgram(io: Io, depsFactory: DepsFactory = defaultDepsFacto
               bucket: opts.storageBucket,
             }
           : undefined;
-      const r = await importCommand(await depsFactory(io), {
-        slug,
-        from: opts.from ?? '',
-        schemas: (opts.schemas ?? 'public')
-          .split(',')
-          .map((s) => s.trim())
-          .filter(Boolean),
-        ...(storage ? { storage } : {}),
-      });
+      const r = await withDeps((deps) =>
+        importCommand(deps, {
+          slug,
+          from: opts.from ?? '',
+          schemas: (opts.schemas ?? 'public')
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean),
+          ...(storage ? { storage } : {}),
+        }),
+      );
       emit(io, g, r, formatReport(r));
     });
 
@@ -219,15 +236,17 @@ export function buildProgram(io: Io, depsFactory: DepsFactory = defaultDepsFacto
     .description('Check versions, drift, TLS, backups, disk; exit 2 on failure')
     .action(async function (this: Command) {
       const g = globals(this);
-      const deps = await depsFactory(io);
-      const r = await doctorCommand(deps);
+      const { r, cfg } = await withDeps(async (deps) => ({
+        r: await doctorCommand(deps),
+        cfg: deps.cfg,
+      }));
       const lines = r.checks
         .map(
           (c) =>
             `${c.ok ? pc.green('ok  ') : c.level === 'warn' ? pc.yellow('warn') : pc.red('FAIL')} ${c.name.padEnd(28)} ${c.detail}`,
         )
         .join('\n');
-      emit(io, g, r, `${lines}\n\n${externalChecks(deps.cfg)}`);
+      emit(io, g, r, `${lines}\n\n${externalChecks(cfg)}`);
       if (!r.ok) throw new DbmError('doctor found failures', ExitCode.RemoteFailure, 'doctor');
     });
 
@@ -237,7 +256,7 @@ export function buildProgram(io: Io, depsFactory: DepsFactory = defaultDepsFacto
     .argument('<slug>')
     .action(async function (this: Command, slug: string) {
       const g = globals(this);
-      const r = await backupCommand(await depsFactory(io), slug);
+      const r = await withDeps((deps) => backupCommand(deps, slug));
       emit(io, g, r, `${r.files.map((f) => `${f.ModTime}  ${f.Name}`).join('\n')}\n`);
     });
 
@@ -255,13 +274,15 @@ export function buildProgram(io: Io, depsFactory: DepsFactory = defaultDepsFacto
       opts: { as?: string; confirm?: string },
     ) {
       const g = globals(this);
-      const r = await restoreCommand(await depsFactory(io), {
-        slug,
-        backupId,
-        yes: g.yes,
-        ...(opts.as ? { as: opts.as } : {}),
-        ...(opts.confirm ? { confirmSlug: opts.confirm } : {}),
-      });
+      const r = await withDeps((deps) =>
+        restoreCommand(deps, {
+          slug,
+          backupId,
+          yes: g.yes,
+          ...(opts.as ? { as: opts.as } : {}),
+          ...(opts.confirm ? { confirmSlug: opts.confirm } : {}),
+        }),
+      );
       emit(io, g, r, `restored ${r.file} into ${r.target}\n`);
     });
 
@@ -271,7 +292,7 @@ export function buildProgram(io: Io, depsFactory: DepsFactory = defaultDepsFacto
     .argument('<slug>')
     .option('--admin', 'connect as the superuser', false)
     .action(async function (this: Command, slug: string, opts: { admin: boolean }) {
-      const code = await psqlCommand(await depsFactory(io), slug, opts.admin);
+      const code = await withDeps((deps) => psqlCommand(deps, slug, opts.admin));
       if (code !== 0)
         throw new DbmError(`psql exited with ${code}`, ExitCode.RemoteFailure, 'psql');
     });
@@ -283,11 +304,13 @@ export function buildProgram(io: Io, depsFactory: DepsFactory = defaultDepsFacto
     .option('--off', 'make private again', false)
     .action(async function (this: Command, slug: string, opts: { domain?: string; off: boolean }) {
       const g = globals(this);
-      const r = await storagePublicCommand(await depsFactory(io), {
-        slug,
-        off: opts.off,
-        ...(opts.domain ? { domain: opts.domain } : {}),
-      });
+      const r = await withDeps((deps) =>
+        storagePublicCommand(deps, {
+          slug,
+          off: opts.off,
+          ...(opts.domain ? { domain: opts.domain } : {}),
+        }),
+      );
       emit(io, g, r, r.publicBaseUrl ? `S3_PUBLIC_BASE_URL=${r.publicBaseUrl}\n` : 'private\n');
     });
   storage
@@ -296,10 +319,9 @@ export function buildProgram(io: Io, depsFactory: DepsFactory = defaultDepsFacto
     .requiredOption('--origin <origin...>', 'allowed origins')
     .action(async function (this: Command, slug: string, opts: { origin: string[] }) {
       const g = globals(this);
-      const origins = await storageCorsCommand(await depsFactory(io), {
-        slug,
-        origins: opts.origin,
-      });
+      const origins = await withDeps((deps) =>
+        storageCorsCommand(deps, { slug, origins: opts.origin }),
+      );
       emit(io, g, { origins }, `${origins.join('\n')}\n`);
     });
   program
@@ -341,23 +363,26 @@ export function buildProgram(io: Io, depsFactory: DepsFactory = defaultDepsFacto
               storageBucket: opts.b2StorageBucket,
             }
           : undefined;
-      await initCommand(makeFileStore(), io, {
-        host,
-        domain: opts.domain ?? '',
-        tls,
-        user: opts.user ?? 'root',
-        hostname: opts.hostname ?? 'dbm-vps',
-        timezone: opts.timezone ?? 'America/Argentina/Buenos_Aires',
-        ...(opts.tailscaleAuthKey ? { tailscaleAuthKey: opts.tailscaleAuthKey } : {}),
-        ...(opts.dokployApiKey ? { dokployApiKey: opts.dokployApiKey } : {}),
-        ...(b2 ? { b2 } : {}),
-      });
+      const store = makeFileStore();
+      await withLock(store, () =>
+        initCommand(store, io, {
+          host,
+          domain: opts.domain ?? '',
+          tls,
+          user: opts.user ?? 'root',
+          hostname: opts.hostname ?? 'dbm-vps',
+          timezone: opts.timezone ?? 'America/Argentina/Buenos_Aires',
+          ...(opts.tailscaleAuthKey ? { tailscaleAuthKey: opts.tailscaleAuthKey } : {}),
+          ...(opts.dokployApiKey ? { dokployApiKey: opts.dokployApiKey } : {}),
+          ...(b2 ? { b2 } : {}),
+        }),
+      );
     });
   program
     .command('sync-pgbouncer', { hidden: true })
     .description('Re-render PgBouncer config from state and reload')
     .action(async () => {
-      await syncPgbouncerCommand(await depsFactory(io));
+      await withDeps(syncPgbouncerCommand);
     });
 
   return program;
