@@ -49,7 +49,7 @@ dbm init 1.2.3.4 --domain example.com     # one-time VPS bootstrap; prompts for 
 dbm create myapp                          # prints the env block
 ```
 
-Paste the printed variables into `.env.local` and into Vercel (`vercel env add NAME production,preview --value "$V" --yes --force`, then once more for `development`). Set `BETTER_AUTH_URL` to the production URL for production only. Pin functions to São Paulo by copying `templates/nextjs/vercel.json` (`"regions": ["gru1"]`). The `skills/dbm/SKILL.md` skill automates these steps for an AI agent, and `templates/nextjs/` holds the Drizzle, better-auth and S3 files for the app.
+Paste the printed variables into `.env.local` and into Vercel (`vercel env add NAME production,preview --value "$V" --yes --force`, then once more for `development`). Set `BETTER_AUTH_URL` to the production URL for production only. Pin functions to São Paulo by copying `templates/nextjs/vercel.json` (`"regions": ["gru1"]`). The `skills/dbmanager/SKILL.md` skill automates these steps for an AI agent, and `templates/nextjs/` holds the Drizzle, better-auth and S3 files for the app.
 
 `--json` and `--yes` are global options and can go anywhere on the command line: `dbm list --json`, `dbm destroy myapp --yes --confirm myapp`.
 

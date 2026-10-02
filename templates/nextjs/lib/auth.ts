@@ -1,7 +1,7 @@
 import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { nextCookies } from "better-auth/next-js";
-import * as authSchema from "./auth-schema"; // generated: npx auth@latest generate --config lib/auth.ts --output lib/auth-schema.ts -y
+import * as authSchema from "./auth-schema"; // generated: npx auth generate --config lib/auth.ts --output lib/auth-schema.ts -y
 import { db } from "./db";
 
 const vercelHosts = [process.env.VERCEL_URL, process.env.VERCEL_BRANCH_URL].filter((h): h is string => Boolean(h));

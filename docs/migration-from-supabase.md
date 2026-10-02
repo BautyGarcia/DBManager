@@ -105,7 +105,7 @@ rclone copy \
 - Drop foreign keys to `auth.users(id)`; add foreign keys to better-auth's `user(id)`.
 - Remove RLS policies and `auth.uid()` defaults. Authorization moves into server code.
 - Replace Supabase Storage calls with presigned URLs from `lib/s3.ts`. Public assets need `dbm storage public <slug>` and `S3_PUBLIC_BASE_URL`.
-- Generate the better-auth tables and push them: `BETTER_AUTH_URL=http://localhost:3000 npx auth@latest generate --config lib/auth.ts --output lib/auth-schema.ts -y`, then `npx drizzle-kit push` (uses `DATABASE_URL_SESSION`).
+- Generate the better-auth tables and push them: `npx auth generate --config lib/auth.ts --output lib/auth-schema.ts -y`, then `npx drizzle-kit push` (uses `DATABASE_URL_SESSION`).
 
 ## Users
 
