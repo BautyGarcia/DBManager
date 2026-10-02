@@ -128,7 +128,7 @@ describe('init', () => {
     const h = harness();
     const cfg = await initCommand(h.store, h.io, opts, h.adapters);
     expect(Object.keys(h.store.progress.done)).toEqual([...INIT_STEPS]);
-    expect(cfg.dokployUrl).toBe('https://dbm-vps.tail1234.ts.net');
+    expect(cfg.dokployUrl).toBe('https://dbm-vps.tail1234.ts.net:8443');
     expect(cfg.dokployApiKey).toBe('newkey'); // minted, not the pasted one
     expect(cfg.dbHost).toBe('db.example.com');
     expect(cfg.webDomain).toBe('web.example.com');
@@ -173,7 +173,7 @@ describe('init', () => {
     const h = harness();
     h.store.progress = {
       done: { harden: true, tailscale: true, dokploy: true },
-      values: { tailnetUrl: 'https://dbm-vps.tail1234.ts.net' },
+      values: { tailnetUrl: 'https://dbm-vps.tail1234.ts.net:8443' },
     };
     await initCommand(h.store, h.io, opts, h.adapters);
     expect(h.runner.calls.some((c) => c.argv.join(' ') === 'bash -s')).toBe(false);
@@ -353,7 +353,7 @@ describe('init', () => {
     };
     await initCommand(h.store, h.io, opts, h.adapters);
     expect(h.errLines.join('')).toMatch(/host changed/);
-    expect((await h.store.requireConfig()).dokployUrl).toBe('https://dbm-vps.tail1234.ts.net');
+    expect((await h.store.requireConfig()).dokployUrl).toBe('https://dbm-vps.tail1234.ts.net:8443');
   });
   it.each(['Europe/Berlin; rm -rf /', '$(id)', 'a b', ''])(
     'rejects --timezone %j before touching the host',

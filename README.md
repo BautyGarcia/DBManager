@@ -13,7 +13,7 @@
                                       │
                                 TAILSCALE ONLY
                                       │
- Operator / agent ─────────────►      │ https://<host>.<tailnet>.ts.net  (tailscale serve → 127.0.0.1:3000 Dokploy)
+ Operator / agent ─────────────►      │ https://<host>.<tailnet>.ts.net:8443  (tailscale serve → 127.0.0.1:3000 Dokploy)
  dbm CLI ──────────────────────►      │ Dokploy REST API (same URL) + SSH :22 (key-only, public, fail2ban)
 ```
 

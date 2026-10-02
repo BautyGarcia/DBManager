@@ -59,6 +59,9 @@ export interface InitAdapters {
   }) => Promise<boolean>;
 }
 
+/** tailscale serve HTTPS port for the Dokploy dashboard/API (443 conflicts with Traefik). */
+export const TAILSCALE_SERVE_PORT = 8443;
+
 export const INIT_STEPS = [
   'harden',
   'tailscale',
@@ -287,14 +290,22 @@ systemctl enable --now tailscaled
             'init.tailscale',
           );
       }
-      await ssh.run(['tailscale', 'serve', '--bg', '--https=443', 'http://127.0.0.1:3000']);
+      // 8443, not 443: tailscale serve binds a real socket on the tailnet IP, which trips the
+      // Dokploy installer's port check and would collide with Traefik's 0.0.0.0:443.
+      await ssh.run([
+        'tailscale',
+        'serve',
+        '--bg',
+        `--https=${TAILSCALE_SERVE_PORT}`,
+        'http://127.0.0.1:3000',
+      ]);
       const fqdn = st.Self?.DNSName?.replace(/\.$/, '');
       if (!fqdn)
         throw userError(
           'tailscale did not report a DNS name; enable MagicDNS in the admin console',
           'init.tailscale',
         );
-      v.tailnetUrl = `https://${fqdn}`;
+      v.tailnetUrl = `https://${fqdn}:${TAILSCALE_SERVE_PORT}`;
     },
     async dokploy() {
       const services = (
