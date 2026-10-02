@@ -5,6 +5,7 @@ import { backupCommand, restoreCommand } from './commands/backup.js';
 import { type Deps, makeDeps } from './commands/context.js';
 import { createCommand } from './commands/create.js';
 import { destroyCommand } from './commands/destroy.js';
+import { doctorCommand, externalChecks } from './commands/doctor.js';
 import { envCommand } from './commands/env.js';
 import { formatTable, listCommand } from './commands/list.js';
 import { pauseCommand, resumeCommand } from './commands/pause.js';
@@ -168,6 +169,23 @@ export function buildProgram(io: Io, depsFactory: DepsFactory = defaultDepsFacto
         ...(opts.confirm ? { confirmSlug: opts.confirm } : {}),
       });
       emit(io, g, r, `destroyed ${r.slug}\n`);
+    });
+
+  program
+    .command('doctor')
+    .description('Check versions, drift, TLS, backups, disk; exit 2 on failure')
+    .action(async function (this: Command) {
+      const g = globals(this);
+      const deps = await depsFactory(io);
+      const r = await doctorCommand(deps);
+      const lines = r.checks
+        .map(
+          (c) =>
+            `${c.ok ? pc.green('ok  ') : c.level === 'warn' ? pc.yellow('warn') : pc.red('FAIL')} ${c.name.padEnd(28)} ${c.detail}`,
+        )
+        .join('\n');
+      emit(io, g, r, `${lines}\n\n${externalChecks(deps.cfg)}`);
+      if (!r.ok) throw new DbmError('doctor found failures', ExitCode.RemoteFailure, 'doctor');
     });
 
   program
