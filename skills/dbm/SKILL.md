@@ -53,7 +53,7 @@ description: Provision a database + storage project on the operator's own VPS wi
    Do not install `pg`; drizzle-kit would prefer it over postgres.js.
 8. Generate the auth schema and push:
    ```bash
-   BETTER_AUTH_URL="${BETTER_AUTH_URL:-http://localhost:3000}" npx auth@latest generate --config lib/auth.ts --output lib/auth-schema.ts -y
+   BETTER_AUTH_URL="${BETTER_AUTH_URL:-http://localhost:3000}" npx auth generate --config lib/auth.ts --output lib/auth-schema.ts -y
    npx drizzle-kit push
    ```
    `auth generate` needs a base URL, so set `BETTER_AUTH_URL=http://localhost:3000` for that step if the environment has none. `drizzle-kit` reads `DATABASE_URL_SESSION` (session-mode pooler). If push fails with a pooler error, stop and report it; do not switch to `DATABASE_URL`.
