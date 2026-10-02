@@ -38,6 +38,11 @@ describe('destroy', () => {
     expect(t.garage.buckets.has('b1')).toBe(true);
     expect(t.store.state.projects['my-app']).toBeUndefined();
     expect(t.store.saves).toBe(1);
+    expect(t.store.state.destroyed?.['my-app']).toMatchObject({
+      slug: 'my-app',
+      appName: 'pg-my-app-abc123',
+      pgMajor: 18,
+    });
     expect(t.errLines.join('')).toMatch(/bucket my-app kept/);
   });
   it('--purge-storage empties then deletes the bucket and removes the web router', async () => {

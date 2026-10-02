@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { ConfigSchema } from '../../src/core/config.js';
 import {
+  addTombstone,
   emptyState,
   getProject,
   listProjects,
   parseState,
   removeProject,
+  removeTombstone,
   upsertProject,
 } from '../../src/core/state.js';
 import { fakeProject } from '../helpers/project.js';
@@ -61,5 +63,25 @@ describe('config', () => {
       garageAdminPort: 3903,
       dbPort: 6432,
     });
+  });
+});
+
+describe('tombstones', () => {
+  it('old state without destroyed still parses; add/remove are immutable', () => {
+    const s = parseState({ version: 1, projects: {} });
+    expect(s.destroyed).toBeUndefined();
+    const t = {
+      slug: 'a',
+      appName: 'pg-a-x',
+      pgMajor: 18 as const,
+      extensions: [],
+      memoryBytes: 536870912,
+      destroyedAt: 'now',
+    };
+    const s2 = addTombstone(s, t);
+    expect(s2.destroyed?.a).toEqual(t);
+    expect(s.destroyed).toBeUndefined();
+    expect(removeTombstone(s2, 'a').destroyed).toEqual({});
+    expect(parseState(s2).destroyed?.a).toEqual(t);
   });
 });

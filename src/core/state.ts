@@ -39,9 +39,20 @@ export const ProjectSchema = z.object({
 });
 export type Project = z.infer<typeof ProjectSchema>;
 
+export const TombstoneSchema = z.object({
+  slug: z.string(),
+  appName: z.string(),
+  pgMajor: z.union([z.literal(17), z.literal(18)]),
+  extensions: z.array(z.string()),
+  memoryBytes: z.number().int().positive(),
+  destroyedAt: z.string(),
+});
+export type Tombstone = z.infer<typeof TombstoneSchema>;
+
 export const StateV1Schema = z.object({
   version: z.literal(1),
   projects: z.record(z.string(), ProjectSchema),
+  destroyed: z.record(z.string(), TombstoneSchema).optional(),
 });
 export type State = z.infer<typeof StateV1Schema>;
 export const CURRENT_STATE_VERSION = 1;
@@ -72,6 +83,15 @@ export function upsertProject(state: State, project: Project): State {
 export function removeProject(state: State, slug: string): State {
   const { [slug]: _removed, ...rest } = state.projects;
   return { ...state, projects: rest };
+}
+
+export function addTombstone(state: State, t: Tombstone): State {
+  return { ...state, destroyed: { ...state.destroyed, [t.slug]: t } };
+}
+
+export function removeTombstone(state: State, slug: string): State {
+  const { [slug]: _removed, ...rest } = state.destroyed ?? {};
+  return { ...state, destroyed: rest };
 }
 
 export function listProjects(state: State): Project[] {

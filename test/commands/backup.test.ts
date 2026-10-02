@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { backupCommand, pickBackup, restoreCommand } from '../../src/commands/backup.js';
-import { upsertProject } from '../../src/core/state.js';
+import { addTombstone, upsertProject } from '../../src/core/state.js';
 import { makeTestDeps } from '../helpers/fakes.js';
 import { fakeProject } from '../helpers/project.js';
 
@@ -64,5 +64,45 @@ describe('restore', () => {
     expect(r.target).toBe('staging');
     expect(t.store.state.projects.staging?.status).toBe('running');
     expect(t.dokploy.calls).toContain('createPostgres');
+  });
+});
+
+describe('restore from tombstone', () => {
+  const tomb = {
+    slug: 'my-app',
+    appName: 'pg-my-app-abc123',
+    pgMajor: 18 as const,
+    extensions: [],
+    memoryBytes: 536870912,
+    destroyedAt: '2026-09-30T00:00:00Z',
+  };
+  it('--as same slug recreates the project and removes the tombstone', async () => {
+    const t = makeTestDeps();
+    t.store.state = addTombstone(t.store.state, tomb);
+    t.dokploy.files = files;
+    const r = await restoreCommand(t.deps, { slug: 'my-app', backupId: 'latest', as: 'my-app' });
+    expect(r.target).toBe('my-app');
+    expect(t.store.state.projects['my-app']?.status).toBe('running');
+    expect(t.store.state.destroyed?.['my-app']).toBeUndefined();
+    expect(t.dokploy.calls).toContain('createPostgres');
+    const cmd = t.runner.calls.map((c) => c.argv.join(' ')).find((c) => c.includes('pg_restore'));
+    expect(cmd).toContain('dst:dumps/pg-my-app-abc123/db/my-app/2026-09-30T06-03-00-000Z.sql.gz');
+  });
+  it('without --as is a user error', async () => {
+    const t = makeTestDeps();
+    t.store.state = addTombstone(t.store.state, tomb);
+    await expect(restoreCommand(t.deps, { slug: 'my-app', backupId: 'latest' })).rejects.toThrow(
+      /destroyed/,
+    );
+  });
+  it('unknown slug is a user error; --as a live slug is rejected', async () => {
+    const t = makeTestDeps();
+    await expect(restoreCommand(t.deps, { slug: 'zzz', backupId: 'latest' })).rejects.toThrow(
+      /neither a live project nor a destroyed/,
+    );
+    t.store.state = upsertProject(t.store.state, fakeProject('my-app'));
+    await expect(
+      restoreCommand(t.deps, { slug: 'my-app', backupId: 'latest', as: 'my-app' }),
+    ).rejects.toThrow(/already exists/);
   });
 });

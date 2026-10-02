@@ -1,7 +1,7 @@
 import { IMAGES } from '../core/compose.js';
 import { DbmError, ExitCode, userError } from '../core/exit.js';
 import { deriveNames } from '../core/naming.js';
-import { getProject, type Project, removeProject } from '../core/state.js';
+import { addTombstone, getProject, type Project, removeProject } from '../core/state.js';
 import type { Deps } from './context.js';
 import { applyPgbouncer } from './pgbouncer-apply.js';
 import { removeVolume } from './volumes.js';
@@ -134,7 +134,16 @@ export async function destroyCommand(deps: Deps, o: DestroyOptions): Promise<Des
       );
     }
   }
-  await deps.store.saveState(remaining);
+  await deps.store.saveState(
+    addTombstone(remaining, {
+      slug: p.slug,
+      appName: p.dokploy.appName,
+      pgMajor: p.pgMajor,
+      extensions: p.postgres.extensions,
+      memoryBytes: p.postgres.memoryBytes,
+      destroyedAt: deps.now().toISOString(),
+    }),
+  );
 
   for (const w of warnings) deps.io.err(`warning: ${w}\n`);
   deps.io.err(`destroyed ${p.slug}; off-site dumps remain for 30 days\n`);

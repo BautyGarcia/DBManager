@@ -2,7 +2,7 @@ import type { BackupFile } from '../adapters/types.js';
 import { IMAGES } from '../core/compose.js';
 import { userError } from '../core/exit.js';
 import { deriveNames } from '../core/naming.js';
-import { getProject, type Project } from '../core/state.js';
+import { getProject, removeTombstone } from '../core/state.js';
 import type { Deps } from './context.js';
 import { createCommand } from './create.js';
 
@@ -21,11 +21,11 @@ export function pickBackup(files: BackupFile[], backupId: string): BackupFile {
   return f;
 }
 
-async function listFiles(deps: Deps, p: Project): Promise<BackupFile[]> {
+async function listFiles(deps: Deps, p: { slug: string; appName: string }): Promise<BackupFile[]> {
   const names = deriveNames(p.slug);
   return deps.dokploy.listBackupFiles(
     deps.cfg.dumpsDestinationId,
-    `${p.dokploy.appName}/${names.backupPrefix}/`,
+    `${p.appName}/${names.backupPrefix}/`,
   );
 }
 
@@ -39,7 +39,7 @@ export async function backupCommand(
     throw userError(`${slug} is paused; resume before taking a backup`, 'backup');
   deps.io.err('running backup (pg_dump -Fc | gzip -> off-site)...\n');
   await deps.dokploy.manualBackup(p.dokploy.backupId);
-  return { slug, files: await listFiles(deps, p) };
+  return { slug, files: await listFiles(deps, { slug, appName: p.dokploy.appName }) };
 }
 
 export interface RestoreOptions {
@@ -72,21 +72,46 @@ export async function restoreCommand(
   deps: Deps,
   o: RestoreOptions,
 ): Promise<{ target: string; file: string }> {
-  const source = getProject(await deps.store.loadState(), o.slug);
-  const file = pickBackup(await listFiles(deps, source), o.backupId);
+  const state = await deps.store.loadState();
+  const live = state.projects[o.slug];
+  const tomb = state.destroyed?.[o.slug];
+  if (!live && !tomb)
+    throw userError(
+      `${JSON.stringify(o.slug)} is neither a live project nor a destroyed one in state (run \`dbm list\`)`,
+      'restore',
+    );
+  if (o.as && state.projects[o.as])
+    throw userError(`${o.as} already exists; restore without --as to restore in place`, 'restore');
+  if (!live && !o.as)
+    throw userError(
+      `${o.slug} was destroyed; use --as <newslug> (same slug allowed) to recreate it from a dump`,
+      'restore',
+    );
+  const src = live
+    ? {
+        slug: live.slug,
+        appName: live.dokploy.appName,
+        pgMajor: live.pgMajor,
+        extensions: live.postgres.extensions,
+        memoryBytes: live.postgres.memoryBytes,
+      }
+    : tomb;
+  if (!src) throw userError(`${o.slug} not found`, 'restore');
+  const file = pickBackup(await listFiles(deps, src), o.backupId);
   const dest = await deps.dokploy.getDestination(deps.cfg.dumpsDestinationId);
 
-  let target = source;
+  let target = live;
   if (o.as) {
     deps.io.err(`creating ${o.as} for restore...\n`);
     const created = await createCommand(deps, {
       slug: o.as,
-      pg: source.pgMajor,
-      extensions: source.postgres.extensions,
-      memory: String(source.postgres.memoryBytes),
+      pg: src.pgMajor,
+      extensions: src.extensions,
+      memory: String(src.memoryBytes),
     });
     target = created.project;
   }
+  if (!target) throw userError(`${o.slug} not found`, 'restore');
   if (target.status === 'paused')
     throw userError(`${target.slug} is paused; resume before restoring`, 'restore');
 
@@ -102,6 +127,9 @@ export async function restoreCommand(
   });
   deps.io.err(`restoring ${file.Name} into ${target.slug}...\n`);
   await deps.ssh.run(['sh', '-c', script], { input: rcloneConf, timeoutMs: 30 * 60_000 });
+  if (tomb && o.as === o.slug) {
+    await deps.store.saveState(removeTombstone(await deps.store.loadState(), o.slug));
+  }
   deps.io.err('restore complete\n');
   return { target: target.slug, file: file.Name };
 }
