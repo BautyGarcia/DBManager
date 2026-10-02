@@ -23,6 +23,10 @@ function healthyRunner(over: Array<{ match: RegExp; stdout?: string; fail?: bool
       stdout: 'notAfter=Dec 29 12:00:00 2026 GMT\nsubject=CN = db.example.com',
     },
     { match: /openssl x509 -in/, stdout: 'notAfter=Dec 29 12:00:00 2026 GMT' },
+    {
+      match: /cat \/etc\/dokploy\/dbm\/garage\/garage\.toml/,
+      stdout: 'db_engine = "lmdb"\ns3_region = "garage"\n',
+    },
     { match: /docker info --format/, stdout: 'json-file' },
     { match: /cat \/etc\/docker\/daemon\.json/, stdout: '{"log-opts":{"max-size":"10m"}}' },
     {
@@ -68,6 +72,7 @@ describe('doctor', () => {
         'pgbouncer.drift',
         'tls.cert',
         'garage.health',
+        'garage.region',
         'docker.logging',
         'tailscale',
         'disk',
@@ -96,6 +101,45 @@ describe('doctor', () => {
       ok: false,
       level: 'warn',
     });
+  });
+  it('fails docker.logging when log rotation is absent', async () => {
+    const t = makeTestDeps({
+      runner: healthyRunner([{ match: /cat \/etc\/docker\/daemon\.json/, stdout: '{}' }]),
+    });
+    const r = await doctorCommand(t.deps);
+    expect(r.checks.find((c) => c.name === 'docker.logging')).toMatchObject({
+      ok: false,
+      level: 'fail',
+    });
+    expect(r.ok).toBe(false);
+  });
+  it('fails garage.region when s3_region is wrong', async () => {
+    const t = makeTestDeps({
+      runner: healthyRunner([{ match: /garage\.toml/, stdout: 's3_region = "us-east-1"\n' }]),
+    });
+    const r = await doctorCommand(t.deps);
+    expect(r.checks.find((c) => c.name === 'garage.region')).toMatchObject({
+      ok: false,
+      level: 'fail',
+    });
+  });
+  it('records a throwing dependency as a failed check and keeps going', async () => {
+    const t = makeTestDeps({ runner: healthyRunner() });
+    t.garage.failAt.add('health');
+    const r = await doctorCommand(t.deps);
+    expect(r.checks.find((c) => c.name === 'garage.health')).toMatchObject({ ok: false });
+    expect(r.checks.map((c) => c.name)).toEqual(expect.arrayContaining(['disk', 'tailscale']));
+    expect(r.ok).toBe(false);
+  });
+  it('keeps ok true when only warn-level checks fail', async () => {
+    const t = makeTestDeps({ runner: healthyRunner() });
+    t.store.state = upsertProject(t.store.state, p);
+    t.pg.runSql = async (_t, sql) =>
+      sql.includes('server_version') ? '18.6' : '/var/lib/postgresql/18/docker';
+    t.dokploy.files = [{ Path: 'x', Name: 'x', Size: 1, ModTime: '2026-09-01T00:00:00Z' }];
+    const r = await doctorCommand(t.deps);
+    expect(r.checks.find((c) => c.name === 'my-app.backup.age')?.ok).toBe(false);
+    expect(r.ok).toBe(true);
   });
   it('versionAtLeast', () => {
     expect(versionAtLeast('0.30.8', '0.30.0')).toBe(true);

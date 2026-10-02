@@ -130,23 +130,23 @@ export async function doctorCommand(deps: Deps): Promise<{ checks: Check[]; ok: 
   await attempt('garage.health', async () => {
     add('garage.health', await deps.garage.health(), '/health');
   });
-  await attempt(
-    'docker.logging',
-    async () => {
-      const driver = (
-        await deps.ssh.run(['docker', 'info', '--format', '{{.LoggingDriver}}'])
-      ).stdout.trim();
-      const daemon = (await deps.ssh.run(['cat', '/etc/docker/daemon.json'])).stdout;
-      const rotated = daemon.includes('max-size');
-      add(
-        'docker.logging',
-        driver === 'json-file' && rotated,
-        `${driver}, rotation ${rotated ? 'on' : 'OFF'}`,
-        'warn',
-      );
-    },
-    'warn',
-  );
+  await attempt('garage.region', async () => {
+    const toml = (await deps.ssh.run(['cat', `${remote.garageConfDir}/garage.toml`])).stdout;
+    const ok = /^s3_region = "garage"$/m.test(toml);
+    add('garage.region', ok, ok ? 's3_region = garage' : 'garage.toml s3_region is not "garage"');
+  });
+  await attempt('docker.logging', async () => {
+    const driver = (
+      await deps.ssh.run(['docker', 'info', '--format', '{{.LoggingDriver}}'])
+    ).stdout.trim();
+    const daemon = (await deps.ssh.run(['cat', '/etc/docker/daemon.json'])).stdout;
+    const rotated = daemon.includes('max-size');
+    add(
+      'docker.logging',
+      driver === 'json-file' && rotated,
+      `${driver}, rotation ${rotated ? 'on' : 'OFF'}`,
+    );
+  });
   await attempt('tailscale', async () => {
     const st = JSON.parse((await deps.ssh.run(['tailscale', 'status', '--json'])).stdout) as {
       BackendState: string;
