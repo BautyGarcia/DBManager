@@ -520,7 +520,9 @@ cat ca.crt
       await ssh.run([
         'sh',
         '-c',
-        `chown -R 70:70 ${quote(remote.certsDir)}; chmod -R go-rwx ${quote(remote.certsDir)}; docker kill -s HUP ${quote(remote.pgbouncerContainer)} || true`,
+        // The dumper writes certs as root and PgBouncer (uid 70) may already have exited on
+        // "permission denied"; a SIGHUP cannot revive it, so fix ownership and restart.
+        `chown -R 70:70 ${quote(remote.certsDir)}; chmod -R go-rwx ${quote(remote.certsDir)}; docker restart ${quote(remote.pgbouncerContainer)} >/dev/null 2>&1 || true`,
       ]);
       await waitUntil(
         () =>
