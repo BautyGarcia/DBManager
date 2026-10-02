@@ -3,6 +3,8 @@ import pc from 'picocolors';
 import { makeFileStore } from './adapters/store.js';
 import { type Deps, makeDeps } from './commands/context.js';
 import { createCommand } from './commands/create.js';
+import { envCommand } from './commands/env.js';
+import { formatTable, listCommand } from './commands/list.js';
 import { formatEnvBlock } from './core/env.js';
 import { DbmError, ExitCode, userError } from './core/exit.js';
 import { VERSION } from './version.js';
@@ -90,6 +92,40 @@ export function buildProgram(io: Io, depsFactory: DepsFactory = defaultDepsFacto
         { slug: r.project.slug, existed: r.existed, env: r.env },
         `${formatEnvBlock(r.env)}\n# Pin Vercel functions to gru1 (templates/nextjs/vercel.json).\n`,
       );
+    });
+
+  program
+    .command('list')
+    .description('List projects with memory, disk, storage and last backup')
+    .action(async function (this: Command) {
+      const g = globals(this);
+      const deps = await depsFactory(io);
+      const rows = await listCommand(deps);
+      const table = [
+        ['SLUG', 'STATUS', 'PG', 'MEMORY', 'VOLUME', 'STORAGE', 'LAST BACKUP', 'CREATED'],
+        ...rows.map((r) => [
+          r.slug,
+          r.status,
+          String(r.pgMajor),
+          r.memory,
+          r.volume,
+          r.storage,
+          r.lastBackup,
+          r.createdAt.slice(0, 10),
+        ]),
+      ];
+      emit(io, g, rows, rows.length ? formatTable(table) : 'no projects\n');
+    });
+
+  program
+    .command('env')
+    .description('Print the env block for a project')
+    .argument('<slug>')
+    .action(async function (this: Command, slug: string) {
+      const g = globals(this);
+      const deps = await depsFactory(io);
+      const env = await envCommand(deps, slug);
+      emit(io, g, env, formatEnvBlock(env));
     });
 
   return program;
