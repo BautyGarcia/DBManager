@@ -7,6 +7,7 @@ import { createCommand } from './commands/create.js';
 import { destroyCommand } from './commands/destroy.js';
 import { doctorCommand, externalChecks } from './commands/doctor.js';
 import { envCommand } from './commands/env.js';
+import { initCommand } from './commands/init.js';
 import { formatTable, listCommand } from './commands/list.js';
 import { pauseCommand, resumeCommand } from './commands/pause.js';
 import { psqlCommand } from './commands/psql.js';
@@ -258,6 +259,57 @@ export function buildProgram(io: Io, depsFactory: DepsFactory = defaultDepsFacto
         origins: opts.origin,
       });
       emit(io, g, { origins }, `${origins.join('\n')}\n`);
+    });
+  program
+    .command('init')
+    .description(
+      'Bootstrap a fresh Ubuntu 24.04 VPS (hardening, Tailscale, Dokploy, Garage, PgBouncer, backups, smoke test)',
+    )
+    .argument('<ssh-host>')
+    .requiredOption('--domain <domain>', 'base domain; needs db., s3., *.web. A records')
+    .option('--user <user>', 'ssh user', 'root')
+    .option('--tls <mode>', 'letsencrypt|self-ca', 'letsencrypt')
+    .option('--hostname <name>', 'tailscale machine name', 'dbm-vps')
+    .option('--timezone <tz>', 'server timezone', 'America/Argentina/Buenos_Aires')
+    .option('--tailscale-auth-key <key>')
+    .option('--dokploy-api-key <key>')
+    .option('--b2-endpoint <url>')
+    .option('--b2-region <region>')
+    .option('--b2-key-id <id>')
+    .option('--b2-key-secret <secret>')
+    .option('--b2-dumps-bucket <name>')
+    .option('--b2-storage-bucket <name>')
+    .action(async (host: string, opts: Record<string, string | undefined>) => {
+      if (opts.tls !== 'letsencrypt' && opts.tls !== 'self-ca')
+        throw userError('--tls must be letsencrypt or self-ca', 'init');
+      const tls = opts.tls;
+      const b2 =
+        opts.b2Endpoint &&
+        opts.b2Region &&
+        opts.b2KeyId &&
+        opts.b2KeySecret &&
+        opts.b2DumpsBucket &&
+        opts.b2StorageBucket
+          ? {
+              endpoint: opts.b2Endpoint,
+              region: opts.b2Region,
+              keyId: opts.b2KeyId,
+              keySecret: opts.b2KeySecret,
+              dumpsBucket: opts.b2DumpsBucket,
+              storageBucket: opts.b2StorageBucket,
+            }
+          : undefined;
+      await initCommand(makeFileStore(), io, {
+        host,
+        domain: opts.domain ?? '',
+        tls,
+        user: opts.user ?? 'root',
+        hostname: opts.hostname ?? 'dbm-vps',
+        timezone: opts.timezone ?? 'America/Argentina/Buenos_Aires',
+        ...(opts.tailscaleAuthKey ? { tailscaleAuthKey: opts.tailscaleAuthKey } : {}),
+        ...(opts.dokployApiKey ? { dokployApiKey: opts.dokployApiKey } : {}),
+        ...(b2 ? { b2 } : {}),
+      });
     });
   program
     .command('sync-pgbouncer', { hidden: true })
