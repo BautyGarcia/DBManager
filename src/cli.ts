@@ -7,6 +7,7 @@ import { createCommand } from './commands/create.js';
 import { destroyCommand } from './commands/destroy.js';
 import { doctorCommand, externalChecks } from './commands/doctor.js';
 import { envCommand } from './commands/env.js';
+import { formatReport, importCommand } from './commands/import.js';
 import { initCommand } from './commands/init.js';
 import { formatTable, listCommand } from './commands/list.js';
 import { pauseCommand, resumeCommand } from './commands/pause.js';
@@ -170,6 +171,47 @@ export function buildProgram(io: Io, depsFactory: DepsFactory = defaultDepsFacto
         ...(opts.confirm ? { confirmSlug: opts.confirm } : {}),
       });
       emit(io, g, r, `destroyed ${r.slug}\n`);
+    });
+
+  program
+    .command('import')
+    .description(
+      'Import a Supabase (or any Postgres) database and optionally a storage bucket into a project',
+    )
+    .argument('<slug>')
+    .requiredOption('--from <postgres-url>', 'source direct/session-pooler URL (port 5432)')
+    .option('--schemas <list>', 'comma-separated schemas', 'public')
+    .option('--storage-endpoint <url>')
+    .option('--storage-region <region>')
+    .option('--storage-key <id>')
+    .option('--storage-secret <secret>')
+    .option('--storage-bucket <name>')
+    .action(async function (this: Command, slug: string, opts: Record<string, string | undefined>) {
+      const g = globals(this);
+      const storage =
+        opts.storageEndpoint &&
+        opts.storageRegion &&
+        opts.storageKey &&
+        opts.storageSecret &&
+        opts.storageBucket
+          ? {
+              endpoint: opts.storageEndpoint,
+              region: opts.storageRegion,
+              keyId: opts.storageKey,
+              keySecret: opts.storageSecret,
+              bucket: opts.storageBucket,
+            }
+          : undefined;
+      const r = await importCommand(await depsFactory(io), {
+        slug,
+        from: opts.from ?? '',
+        schemas: (opts.schemas ?? 'public')
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean),
+        ...(storage ? { storage } : {}),
+      });
+      emit(io, g, r, formatReport(r));
     });
 
   program
