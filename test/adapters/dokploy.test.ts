@@ -78,6 +78,9 @@ const server = setupServer(
     HttpResponse.json({ backupId: 'bk_1', appName: pgRow.appName }),
   ),
   http.post(`${BASE}/api/backup.manualBackupPostgres`, () => HttpResponse.json(true)),
+  http.get(`${BASE}/api/destination.all`, () =>
+    HttpResponse.json([{ destinationId: 'd1', name: 'dbm-dumps', provider: 'Other' }]),
+  ),
   http.get(`${BASE}/api/backup.listBackupFiles`, () =>
     HttpResponse.json([
       {
@@ -162,6 +165,9 @@ describe('DokployClient', () => {
     await client.manualBackup('bk_1');
     const files = await client.listBackupFiles('d1', 'pg-my-app-k3j9dq/db/my-app/');
     expect(files[0]?.ModTime).toBe('2026-09-30T06:03:01Z');
+    expect(await client.listDestinations()).toEqual([
+      { destinationId: 'd1', name: 'dbm-dumps', provider: 'Other' },
+    ]);
   });
   it('mints an unlimited api key', async () => {
     expect((await client.listOrganizations())[0]?.id).toBe('org_1');

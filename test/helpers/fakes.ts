@@ -108,7 +108,7 @@ export class FakeDokploy implements DokployClient {
                 name: n,
               })),
             ),
-          compose: [],
+          compose: [...this.composes],
         },
       ],
     };
@@ -170,9 +170,17 @@ export class FakeDokploy implements DokployClient {
     this.guard('removePostgres');
     this.postgres.delete(id);
   }
-  async createCompose() {
+  /** Compose services created so far; returned by getProject under the environment. */
+  composes: Array<{ composeId: string; appName: string; name: string }> = [];
+  async createCompose(input: { name: string; appName: string }) {
     this.guard('createCompose');
-    return { composeId: 'c1', appName: 'dbm-x' };
+    const c = {
+      composeId: `c${this.composes.length + 1}`,
+      appName: `${input.appName}-abc123`,
+      name: input.name,
+    };
+    this.composes.push(c);
+    return { composeId: c.composeId, appName: c.appName };
   }
   async updateCompose() {
     this.guard('updateCompose');
@@ -184,9 +192,16 @@ export class FakeDokploy implements DokployClient {
     this.guard('getCompose');
     return { composeId: 'c1', appName: 'dbm-x', composeStatus: 'done' };
   }
-  async createDestination() {
+  destinations: Array<{ destinationId: string; name: string }> = [];
+  async listDestinations() {
+    this.guard('listDestinations');
+    return this.destinations;
+  }
+  async createDestination(input: DestinationInput) {
     this.guard('createDestination');
-    return { destinationId: 'd1' };
+    const d = { destinationId: `d${this.destinations.length + 1}`, name: input.name };
+    this.destinations.push(d);
+    return { destinationId: d.destinationId };
   }
   async testDestination() {
     this.guard('testDestination');

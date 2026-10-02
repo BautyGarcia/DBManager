@@ -8,7 +8,7 @@ import type { DokployClient, GarageAdmin, SshRunner } from '../adapters/types.js
 import type { Io } from '../cli.js';
 import { IMAGES, renderGarageCompose, renderPgbouncerCompose } from '../core/compose.js';
 import type { Config, ConfigInput } from '../core/config.js';
-import { userError } from '../core/exit.js';
+import { remoteError, userError } from '../core/exit.js';
 import { renderGarageToml } from '../core/garage-config.js';
 import { DEFAULT_HARDEN, renderHardenScript } from '../core/harden.js';
 import {
@@ -259,11 +259,16 @@ systemctl enable --now tailscaled
           [
             'sh',
             '-c',
-            `tailscale up --auth-key=file:/root/.dbm-tskey --hostname=${quote(hostname)}; rm -f /root/.dbm-tskey`,
+            `tailscale up --auth-key=file:/root/.dbm-tskey --hostname=${quote(hostname)}; rc=$?; rm -f /root/.dbm-tskey; exit $rc`,
           ],
           { timeoutMs: 120_000 },
         );
         st = await status();
+        if (st.BackendState !== 'Running')
+          throw remoteError(
+            `tailscale is ${st.BackendState} after 'tailscale up'; check that the auth key is valid, single-use and pre-approved`,
+            'init.tailscale',
+          );
       }
       await ssh.run(['tailscale', 'serve', '--bg', '--https=443', 'http://127.0.0.1:3000']);
       const fqdn = st.Self?.DNSName?.replace(/\.$/, '');
@@ -442,9 +447,12 @@ chown -R 70:70 "$d"; chmod 600 privatekey.key
 cat ca.crt
 `,
         });
-        v.sslCaPem = r.stdout.trim().endsWith('-----END CERTIFICATE-----')
-          ? `${r.stdout.trim()}\n`
-          : r.stdout;
+        if (!r.stdout.includes('-----BEGIN CERTIFICATE-----'))
+          throw remoteError(
+            `self-signed CA generation did not print a certificate: ${JSON.stringify(r.stdout.slice(0, 200))}`,
+            'init.pgbouncer.ca',
+          );
+        v.sslCaPem = `${r.stdout.trim()}\n`;
       }
       await upsertCompose(
         'dbm-pgbouncer',
@@ -513,9 +521,20 @@ cat ca.crt
         endpoint: b.endpoint,
         additionalFlags: null,
       };
-      await dokploy().testDestination(input);
-      if (!v.dumpsDestinationId)
-        v.dumpsDestinationId = (await dokploy().createDestination(input)).destinationId;
+      try {
+        await dokploy().testDestination(input);
+      } catch (e) {
+        throw remoteError(
+          `${e instanceof Error ? e.message : String(e)}\nIf this is Backblaze B2 with provider Other, check endpoint/region, or pass rclone flags via additionalFlags (see docs/runbook.md)`,
+          'init.destination',
+        );
+      }
+      if (!v.dumpsDestinationId) {
+        const existing = (await dokploy().listDestinations()).find((d) => d.name === input.name);
+        v.dumpsDestinationId =
+          existing?.destinationId ?? (await dokploy().createDestination(input)).destinationId;
+        await checkpoint();
+      }
       await ssh.upload(
         `${remote.rcloneConfDir}/rclone.conf`,
         renderRcloneConf({
@@ -562,8 +581,20 @@ cat ca.crt
     async smoke() {
       const cfg = await store.requireConfig();
       const deps = a.makeDeps(cfg, store, io);
+      const destroySmoke = () =>
+        destroyCommand(deps, {
+          slug: 'dbm-smoke',
+          purgeStorage: true,
+          yes: true,
+          confirmSlug: 'dbm-smoke',
+        });
+      if ((await store.loadState()).projects['dbm-smoke']) {
+        io.err('removing leftover dbm-smoke from a previous run...\n');
+        await destroySmoke();
+      }
       io.err('smoke test: creating dbm-smoke...\n');
       const created = await createCommand(deps, { slug: 'dbm-smoke' });
+      let smokeError: unknown;
       try {
         const p = created.project;
         for (const db of ['dbm-smoke', 'dbm-smoke_session']) {
@@ -581,47 +612,51 @@ cat ca.crt
               'init.smoke.postgres',
             );
         }
-        if (p.storage) {
-          const conf = `[g]\ntype = s3\nprovider = Other\nenv_auth = false\naccess_key_id = ${p.storage.keyId}\nsecret_access_key = ${p.storage.keySecret}\nendpoint = https://${s3Host}\nregion = garage\nforce_path_style = true\nno_check_bucket = true\n`;
-          await ssh.upload('/root/.dbm-smoke-rclone.conf', conf, { mode: '0600' });
-          const obj = quote(`g:${p.storage.bucket}/smoke.txt`);
-          // On rcat failure remove the credentials file before failing.
-          await ssh.run([
-            'sh',
-            '-c',
-            `printf smoke-ok | docker run --rm -i -v /root/.dbm-smoke-rclone.conf:/c.conf:ro ${IMAGES.rclone} --config /c.conf rcat ${obj} || { rm -f /root/.dbm-smoke-rclone.conf; exit 1; }`,
-          ]);
-          const got = await ssh.run([
-            'sh',
-            '-c',
-            `docker run --rm -v /root/.dbm-smoke-rclone.conf:/c.conf:ro ${IMAGES.rclone} --config /c.conf cat ${obj}; rm -f /root/.dbm-smoke-rclone.conf`,
-          ]);
-          if (got.stdout.trim() !== 'smoke-ok')
-            throw userError(
-              `S3 round-trip through https://${s3Host} failed: got ${JSON.stringify(got.stdout)}`,
-              'init.smoke.s3',
-            );
-        }
-        if (p.dokploy.backupId) {
-          await deps.dokploy.manualBackup(p.dokploy.backupId);
-          const files = await deps.dokploy.listBackupFiles(
-            cfg.dumpsDestinationId,
-            `${p.dokploy.appName}/db/dbm-smoke/`,
+        if (!p.storage)
+          throw remoteError('dbm-smoke was created without a storage bucket', 'init.smoke.s3');
+        const conf = `[g]\ntype = s3\nprovider = Other\nenv_auth = false\naccess_key_id = ${p.storage.keyId}\nsecret_access_key = ${p.storage.keySecret}\nendpoint = https://${s3Host}\nregion = garage\nforce_path_style = true\nno_check_bucket = true\n`;
+        await ssh.upload('/root/.dbm-smoke-rclone.conf', conf, { mode: '0600' });
+        const obj = quote(`g:${p.storage.bucket}/smoke.txt`);
+        // On rcat failure remove the credentials file before failing.
+        await ssh.run([
+          'sh',
+          '-c',
+          `printf smoke-ok | docker run --rm -i -v /root/.dbm-smoke-rclone.conf:/c.conf:ro ${IMAGES.rclone} --config /c.conf rcat ${obj} || { rm -f /root/.dbm-smoke-rclone.conf; exit 1; }`,
+        ]);
+        const got = await ssh.run([
+          'sh',
+          '-c',
+          `docker run --rm -v /root/.dbm-smoke-rclone.conf:/c.conf:ro ${IMAGES.rclone} --config /c.conf cat ${obj}; rm -f /root/.dbm-smoke-rclone.conf`,
+        ]);
+        if (got.stdout.trim() !== 'smoke-ok')
+          throw userError(
+            `S3 round-trip through https://${s3Host} failed: got ${JSON.stringify(got.stdout)}`,
+            'init.smoke.s3',
           );
-          if (!files.length)
-            throw userError(
-              'manual backup ran but no object appeared in the dumps bucket',
-              'init.smoke.backup',
-            );
-        }
-      } finally {
-        await destroyCommand(deps, {
-          slug: 'dbm-smoke',
-          purgeStorage: true,
-          yes: true,
-          confirmSlug: 'dbm-smoke',
-        });
+        if (!p.dokploy.backupId)
+          throw remoteError('dbm-smoke was created without a backup schedule', 'init.smoke.backup');
+        await deps.dokploy.manualBackup(p.dokploy.backupId);
+        const files = await deps.dokploy.listBackupFiles(
+          cfg.dumpsDestinationId,
+          `${p.dokploy.appName}/db/dbm-smoke/`,
+        );
+        if (!files.length)
+          throw userError(
+            'manual backup ran but no object appeared in the dumps bucket',
+            'init.smoke.backup',
+          );
+      } catch (e) {
+        smokeError = e;
       }
+      try {
+        await destroySmoke();
+      } catch (e) {
+        io.err(
+          `warning: could not destroy dbm-smoke: ${e instanceof Error ? e.message : String(e)}\n`,
+        );
+        if (smokeError === undefined) throw e;
+      }
+      if (smokeError !== undefined) throw smokeError;
     },
   };
 
@@ -635,6 +670,8 @@ cat ca.crt
     progress.done[name] = true;
     await store.saveInitProgress(progress);
   }
+  // Spec 5.4: intermediate secrets (Garage master token, B2 secret, ...) must not stay on this machine.
+  await store.saveInitProgress({ done: progress.done, values: {} });
   const cfg = await store.requireConfig();
   io.err(
     `\ninit complete.\n  dashboard: ${cfg.dokployUrl}\n  database:  ${cfg.dbHost}:6432 (TLS, ${cfg.tls})\n  storage:   https://${cfg.s3Host}\n\nFrom a machine outside the tailnet verify:\n  nc -zv -w3 ${quote(o.host)} 3000   # must FAIL\n  nc -zv -w3 ${quote(cfg.dbHost)} 6432  # must succeed\n`,

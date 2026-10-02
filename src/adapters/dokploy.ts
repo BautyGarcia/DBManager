@@ -200,6 +200,11 @@ export function makeDokployClient(o: DokployClientOptions): DokployClient {
         })
         .parse(await call('compose.one', { method: 'GET', query: { composeId } }));
     },
+    async listDestinations() {
+      return z
+        .array(z.looseObject({ destinationId: z.string(), name: z.string() }))
+        .parse(await call('destination.all', { method: 'GET' }));
+    },
     async createDestination(input: DestinationInput) {
       return z
         .looseObject({ destinationId: z.string() })

@@ -159,6 +159,7 @@ export interface DokployClient {
   getCompose(
     composeId: string,
   ): Promise<{ composeId: string; appName: string; composeStatus: string }>;
+  listDestinations(): Promise<Array<{ destinationId: string; name: string }>>;
   createDestination(input: DestinationInput): Promise<{ destinationId: string }>;
   testDestination(input: DestinationInput): Promise<void>;
   getDestination(destinationId: string): Promise<DestinationInput & { destinationId: string }>;

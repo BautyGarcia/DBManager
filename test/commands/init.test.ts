@@ -1,8 +1,16 @@
 import { describe, expect, it } from 'vitest';
+import type { SshRunner } from '../../src/adapters/types.js';
 import type { Io } from '../../src/cli.js';
 import { INIT_STEPS, type InitAdapters, initCommand } from '../../src/commands/init.js';
 import { makeFakeRunner } from '../helpers/fake-runner.js';
-import { FakeDokploy, FakeGarage, MemoryStore, makeTestDeps } from '../helpers/fakes.js';
+import {
+  FakeDokploy,
+  FakeGarage,
+  MemoryStore,
+  makeTestDeps,
+  testConfigInput,
+} from '../helpers/fakes.js';
+import { fakeProject } from '../helpers/project.js';
 
 function harness() {
   const runner = makeFakeRunner([
@@ -61,6 +69,45 @@ function harness() {
   return { runner, dokploy, garage, store, prompts, errLines, io, adapters };
 }
 
+/** Runner whose tailscale status is NeedsLogin until `tailscale up` ran (then Running if `upWorks`). */
+function tailscaleRunner(h: ReturnType<typeof harness>, upWorks: boolean) {
+  let upCalled = false;
+  const status = (state: string) =>
+    JSON.stringify({ BackendState: state, Self: { DNSName: 'dbm-vps.tail1234.ts.net.' } });
+  const runner = makeFakeRunner([
+    {
+      match: /tailscale status --json/,
+      get stdout() {
+        return status(upCalled && upWorks ? 'Running' : 'NeedsLogin');
+      },
+    },
+    { match: /docker service ls/, stdout: 'dokploy' },
+    { match: /http_code/, stdout: '200' },
+    { match: /openssl s_client/, stdout: "issuer=O = Let's Encrypt" },
+    { match: /pgbouncer --version/, stdout: 'PgBouncer 1.26.0' },
+    { match: /--config \/c\.conf cat/, stdout: 'smoke-ok' },
+  ]);
+  const run = runner.runner.run;
+  runner.runner.run = async (argv, o) => {
+    if (argv.join(' ').includes('tailscale up')) upCalled = true;
+    return run(argv, o);
+  };
+  const adapters: InitAdapters = {
+    ...h.adapters,
+    makeRunner: () => runner.runner,
+    makeDeps: (cfg, st, io2) =>
+      makeTestDeps({
+        cfg,
+        store: st as MemoryStore,
+        dokploy: h.dokploy,
+        garage: h.garage,
+        runner,
+        io: io2,
+      }).deps,
+  };
+  return { runner, adapters };
+}
+
 const opts = {
   host: '1.2.3.4',
   domain: 'example.com',
@@ -117,6 +164,9 @@ describe('init', () => {
     expect(h.store.state.projects['dbm-smoke']).toBeUndefined();
     const harden = h.runner.calls.find((c) => c.argv.join(' ') === 'bash -s');
     expect(harden?.input).toContain('set -euo pipefail');
+    // secrets do not outlive a successful init on this machine
+    expect(h.store.progress.values).toEqual({});
+    expect(Object.keys(h.store.progress.done)).toEqual([...INIT_STEPS]);
   });
   it('resumes: completed steps are skipped on re-run', async () => {
     const h = harness();
@@ -183,41 +233,96 @@ describe('init', () => {
     expect(h.store.progress.done.smoke).toBeUndefined();
     expect(h.store.progress.done.config).toBe(true);
   });
-  it('passes the tailscale auth key via a 0600 file, never in argv', async () => {
+  it('logs in to tailscale via a 0600 key file (never argv) when status goes NeedsLogin -> Running', async () => {
     const h = harness();
-    const runner = makeFakeRunner([
-      {
-        match: /tailscale status --json/,
-        stdout: JSON.stringify({
-          BackendState: 'NeedsLogin',
-          Self: { DNSName: 'dbm-vps.tail1234.ts.net.' },
-        }),
-      },
-      { match: /docker service ls/, stdout: 'dokploy' },
-      { match: /http_code/, stdout: '200' },
-      { match: /openssl s_client/, stdout: "issuer=O = Let's Encrypt" },
-      { match: /pgbouncer --version/, stdout: 'PgBouncer 1.26.0' },
-      { match: /--config \/c\.conf cat/, stdout: 'smoke-ok' },
-    ]);
-    await initCommand(h.store, h.io, opts, {
-      ...h.adapters,
-      makeRunner: () => runner.runner,
-      makeDeps: (cfg, st, io2) =>
-        makeTestDeps({
-          cfg,
-          store: st as MemoryStore,
-          dokploy: h.dokploy,
-          garage: h.garage,
-          runner,
-          io: io2,
-        }).deps,
-    });
-    const key = runner.uploads.find((u) => u.path === '/root/.dbm-tskey');
+    const t = tailscaleRunner(h, true);
+    await initCommand(h.store, h.io, opts, t.adapters);
+    const key = t.runner.uploads.find((u) => u.path === '/root/.dbm-tskey');
     expect(key?.content).toBe('tskey-x');
     expect(key?.mode).toBe('0600');
-    expect(
-      runner.calls.some((c) => c.argv.join(' ').includes('--auth-key=file:/root/.dbm-tskey')),
-    ).toBe(true);
-    expect(runner.calls.some((c) => c.argv.join(' ').includes('tskey-x'))).toBe(false);
+    const up = t.runner.calls.find((c) => c.argv.join(' ').includes('tailscale up'));
+    expect(up?.argv.join(' ')).toContain('--auth-key=file:/root/.dbm-tskey');
+    expect(up?.argv.join(' ')).toContain('rc=$?; rm -f /root/.dbm-tskey; exit $rc');
+    expect(t.runner.calls.some((c) => c.argv.join(' ').includes('tskey-x'))).toBe(false);
+  });
+  it('fails the tailscale step when the backend is still not Running after up', async () => {
+    const h = harness();
+    const t = tailscaleRunner(h, false);
+    await expect(initCommand(h.store, h.io, opts, t.adapters)).rejects.toThrow(/NeedsLogin/);
+    expect(h.store.progress.done.tailscale).toBeUndefined();
+    expect(h.store.progress.done.harden).toBe(true);
+  });
+  it('keeps the smoke error when destroying dbm-smoke also fails', async () => {
+    const h = harness();
+    h.dokploy.failAt.add('removePostgres');
+    const adapters: InitAdapters = { ...h.adapters, probePostgres: async () => false };
+    await expect(initCommand(h.store, h.io, opts, adapters)).rejects.toThrow(/could not connect/);
+    expect(h.errLines.join('')).toMatch(/warning: could not destroy dbm-smoke/);
+  });
+  it('removes a leftover dbm-smoke before re-running the smoke step', async () => {
+    const h = harness();
+    await h.store.saveConfig(testConfigInput);
+    h.store.state.projects['dbm-smoke'] = fakeProject('dbm-smoke');
+    h.store.progress = {
+      done: Object.fromEntries(INIT_STEPS.filter((s) => s !== 'smoke').map((s) => [s, true])),
+      values: {},
+    };
+    await initCommand(h.store, h.io, opts, h.adapters);
+    expect(h.errLines.join('')).toMatch(/removing leftover dbm-smoke/);
+    expect(h.dokploy.calls.filter((c) => c === 'createPostgres')).toHaveLength(1);
+    expect(h.store.state.projects['dbm-smoke']).toBeUndefined();
+    expect(h.store.progress.done.smoke).toBe(true);
+  });
+  it('reuses an existing dbm-dumps destination', async () => {
+    const h = harness();
+    h.dokploy.destinations.push({ destinationId: 'dX', name: 'dbm-dumps' });
+    const cfg = await initCommand(h.store, h.io, opts, h.adapters);
+    expect(cfg.dumpsDestinationId).toBe('dX');
+    expect(h.dokploy.calls).not.toContain('createDestination');
+  });
+  it('adds an additionalFlags hint when the destination test fails', async () => {
+    const h = harness();
+    h.dokploy.failAt.add('testDestination');
+    await expect(initCommand(h.store, h.io, opts, h.adapters)).rejects.toThrow(/additionalFlags/);
+  });
+  it('re-running after a failure in garage reuses minted tokens and updates the compose', async () => {
+    const h = harness();
+    let failS3Router = true;
+    const flaky: SshRunner = {
+      ...h.runner.runner,
+      async upload(path, content, o) {
+        if (failS3Router && path.endsWith('/dbm-s3.yml')) throw new Error('upload failed');
+        return h.runner.runner.upload(path, content, o);
+      },
+    };
+    const adapters: InitAdapters = { ...h.adapters, makeRunner: () => flaky };
+    await expect(initCommand(h.store, h.io, opts, adapters)).rejects.toThrow(/upload failed/);
+    expect(h.store.progress.done.garage).toBeUndefined();
+    expect(h.store.progress.values.garageAdminToken).toBe('scoped');
+    failS3Router = false;
+    await initCommand(h.store, h.io, opts, adapters);
+    expect(h.garage.calls.filter((c) => c === 'createAdminToken')).toHaveLength(1);
+    expect([...h.garage.keys.values()].filter((k) => k.name === 'dbm-backup')).toHaveLength(1);
+    expect(h.dokploy.calls.filter((c) => c === 'createCompose')).toHaveLength(2);
+    expect(h.dokploy.composes.map((c) => c.name)).toEqual(['dbm-garage', 'dbm-pgbouncer']);
+  });
+  it('creates the two compose services once; a resumed run creates none', async () => {
+    const h = harness();
+    h.dokploy.failAt.add('createDestination');
+    await expect(initCommand(h.store, h.io, opts, h.adapters)).rejects.toThrow();
+    expect(h.dokploy.calls.filter((c) => c === 'createCompose')).toHaveLength(2);
+    h.dokploy.failAt.clear();
+    const before = h.dokploy.calls.length;
+    await initCommand(h.store, h.io, opts, h.adapters);
+    const second = h.dokploy.calls.slice(before);
+    expect(second.filter((c) => c === 'createCompose')).toHaveLength(0);
+    expect(h.garage.calls.filter((c) => c === 'createAdminToken')).toHaveLength(1);
+    expect(h.store.progress.values).toEqual({});
+  });
+  it('self-ca fails when the CA script prints no certificate', async () => {
+    const h = harness();
+    await expect(
+      initCommand(h.store, h.io, { ...opts, tls: 'self-ca' }, h.adapters),
+    ).rejects.toThrow(/did not print a certificate/);
   });
 });
