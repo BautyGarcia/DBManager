@@ -21,6 +21,15 @@ const PostgresRow = z.looseObject({
   applicationStatus: z.enum(['idle', 'running', 'done', 'error']),
   databaseName: z.string(),
   databaseUser: z.string(),
+  backups: z
+    .array(
+      z.looseObject({
+        backupId: z.string(),
+        prefix: z.string().optional(),
+        database: z.string().optional(),
+      }),
+    )
+    .optional(),
 });
 
 const ProjectRow = z.looseObject({
@@ -218,9 +227,23 @@ export function makeDokployClient(o: DokployClientOptions): DokployClient {
       );
     },
     async createBackup(input: BackupInput) {
-      return z
-        .looseObject({ backupId: z.string() })
-        .parse(await call('backup.create', { body: { ...input, backupType: 'database' } }));
+      const raw = await call('backup.create', { body: { ...input, backupType: 'database' } });
+      const direct = z.looseObject({ backupId: z.string() }).safeParse(raw);
+      if (direct.success) return { backupId: direct.data.backupId };
+      // Live Dokploy 0.30.8 returns an empty body here; the schedule shows up on postgres.one.
+      const row = PostgresRow.parse(
+        await call('postgres.one', { method: 'GET', query: { postgresId: input.postgresId } }),
+      );
+      const match = (row.backups ?? []).find(
+        (b) =>
+          b.prefix === input.prefix && (b.database === undefined || b.database === input.database),
+      );
+      if (!match)
+        throw remoteError(
+          `backup.create returned no backupId and postgres.one lists no backup with prefix ${input.prefix}`,
+          'dokploy.backup.create',
+        );
+      return { backupId: match.backupId };
     },
     async updateBackup(input) {
       await call('backup.update', { body: { ...input, backupType: 'database' } });

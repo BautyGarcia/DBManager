@@ -78,6 +78,8 @@ export interface DokployPostgres {
   applicationStatus: PostgresStatus;
   databaseName: string;
   databaseUser: string;
+  /** Backup schedules attached to this service, as returned by postgres.one. */
+  backups?: Array<{ backupId: string; prefix?: string; database?: string }>;
 }
 export interface DokployProject {
   projectId: string;

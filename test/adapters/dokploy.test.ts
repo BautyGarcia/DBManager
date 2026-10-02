@@ -169,6 +169,52 @@ describe('DokployClient', () => {
       { destinationId: 'd1', name: 'dbm-dumps', provider: 'Other' },
     ]);
   });
+  it('createBackup falls back to postgres.one when the create response body is empty (live 0.30.8)', async () => {
+    server.use(
+      http.post(`${BASE}/api/backup.create`, () => new HttpResponse('', { status: 200 })),
+      http.get(`${BASE}/api/postgres.one`, () =>
+        HttpResponse.json({
+          ...pgRow,
+          applicationStatus: 'done',
+          backups: [
+            { backupId: 'bk_other', prefix: 'db/other', database: 'other' },
+            { backupId: 'bk_9', prefix: 'db/my-app', database: 'my_app' },
+          ],
+        }),
+      ),
+    );
+    const b = await client.createBackup({
+      schedule: '3 6 * * *',
+      prefix: 'db/my-app',
+      destinationId: 'd1',
+      database: 'my_app',
+      databaseType: 'postgres',
+      postgresId: 'pg_1',
+      enabled: true,
+      keepLatestCount: 35,
+    });
+    expect(b.backupId).toBe('bk_9');
+  });
+  it('createBackup fails clearly when neither the response nor postgres.one carries the id', async () => {
+    server.use(
+      http.post(`${BASE}/api/backup.create`, () => new HttpResponse('', { status: 200 })),
+      http.get(`${BASE}/api/postgres.one`, () =>
+        HttpResponse.json({ ...pgRow, applicationStatus: 'done', backups: [] }),
+      ),
+    );
+    await expect(
+      client.createBackup({
+        schedule: '3 6 * * *',
+        prefix: 'db/my-app',
+        destinationId: 'd1',
+        database: 'my_app',
+        databaseType: 'postgres',
+        postgresId: 'pg_1',
+        enabled: true,
+        keepLatestCount: 35,
+      }),
+    ).rejects.toMatchObject({ exitCode: 2, step: 'dokploy.backup.create' });
+  });
   it('mints an unlimited api key', async () => {
     expect((await client.listOrganizations())[0]?.id).toBe('org_1');
     expect(await client.createApiKey({ name: 'dbm', organizationId: 'org_1' })).toBe('dbm_key');
