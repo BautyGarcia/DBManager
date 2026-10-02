@@ -80,9 +80,9 @@ export function makeDokployClient(o: DokployClientOptions): DokployClient {
     const qs = opts.query ? `?${new URLSearchParams(opts.query).toString()}` : '';
     const mult = Number(process.env.DBM_TIMEOUT_MULTIPLIER ?? '1') || 1;
     let res: Response;
-    try {
+    const doFetch = () =>
       // Resolve fetch per call so interceptors installed after client creation (MSW) apply.
-      res = await (o.fetchFn ?? fetch)(`${base}/api/${proc}${qs}`, {
+      (o.fetchFn ?? fetch)(`${base}/api/${proc}${qs}`, {
         method,
         headers: {
           'x-api-key': o.apiKey,
@@ -92,6 +92,17 @@ export function makeDokployClient(o: DokployClientOptions): DokployClient {
         ...(opts.body !== undefined ? { body: JSON.stringify(opts.body) } : {}),
         signal: AbortSignal.timeout((opts.timeoutMs ?? DEFAULT_TIMEOUT_MS) * mult),
       });
+    try {
+      try {
+        res = await doFetch();
+      } catch (first) {
+        // A transient "fetch failed" (e.g. first contact with the tailnet peer) gets one retry;
+        // timeouts (AbortError) and anything else are not retried.
+        if ((first as Error).name === 'TimeoutError' || (first as Error).name === 'AbortError')
+          throw first;
+        await new Promise((r) => setTimeout(r, 1000));
+        res = await doFetch();
+      }
     } catch (e) {
       throw remoteError(
         `dokploy ${proc}: ${e instanceof Error ? e.message : String(e)}`,
