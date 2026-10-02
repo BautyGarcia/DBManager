@@ -3,6 +3,7 @@ import pc from 'picocolors';
 import { makeFileStore } from './adapters/store.js';
 import { type Deps, makeDeps } from './commands/context.js';
 import { createCommand } from './commands/create.js';
+import { destroyCommand } from './commands/destroy.js';
 import { envCommand } from './commands/env.js';
 import { formatTable, listCommand } from './commands/list.js';
 import { pauseCommand, resumeCommand } from './commands/pause.js';
@@ -143,6 +144,27 @@ export function buildProgram(io: Io, depsFactory: DepsFactory = defaultDepsFacto
         emit(io, g, { slug: p.slug, status: p.status }, `${p.slug}: ${p.status}\n`);
       });
   }
+
+  program
+    .command('destroy')
+    .description('Destroy a project (final backup first; off-site dumps kept 30 days)')
+    .argument('<slug>')
+    .option('--purge-storage', 'also delete the S3 bucket', false)
+    .option('--confirm <slug>', 'required with --yes')
+    .action(async function (
+      this: Command,
+      slug: string,
+      opts: { purgeStorage: boolean; confirm?: string },
+    ) {
+      const g = globals(this);
+      const r = await destroyCommand(await depsFactory(io), {
+        slug,
+        purgeStorage: opts.purgeStorage,
+        yes: g.yes,
+        ...(opts.confirm ? { confirmSlug: opts.confirm } : {}),
+      });
+      emit(io, g, r, `destroyed ${r.slug}\n`);
+    });
 
   return program;
 }
