@@ -9,6 +9,7 @@ import { envCommand } from './commands/env.js';
 import { formatTable, listCommand } from './commands/list.js';
 import { pauseCommand, resumeCommand } from './commands/pause.js';
 import { psqlCommand } from './commands/psql.js';
+import { storageCorsCommand, storagePublicCommand } from './commands/storage.js';
 import { syncPgbouncerCommand } from './commands/sync-pgbouncer.js';
 import { formatEnvBlock } from './core/env.js';
 import { DbmError, ExitCode, userError } from './core/exit.js';
@@ -212,6 +213,33 @@ export function buildProgram(io: Io, depsFactory: DepsFactory = defaultDepsFacto
       const code = await psqlCommand(await depsFactory(io), slug, opts.admin);
       if (code !== 0)
         throw new DbmError(`psql exited with ${code}`, ExitCode.RemoteFailure, 'psql');
+    });
+  const storage = program.command('storage').description('Bucket visibility and CORS');
+  storage
+    .command('public')
+    .argument('<slug>')
+    .option('--domain <host>', 'also serve on a vanity hostname')
+    .option('--off', 'make private again', false)
+    .action(async function (this: Command, slug: string, opts: { domain?: string; off: boolean }) {
+      const g = globals(this);
+      const r = await storagePublicCommand(await depsFactory(io), {
+        slug,
+        off: opts.off,
+        ...(opts.domain ? { domain: opts.domain } : {}),
+      });
+      emit(io, g, r, r.publicBaseUrl ? `S3_PUBLIC_BASE_URL=${r.publicBaseUrl}\n` : 'private\n');
+    });
+  storage
+    .command('cors')
+    .argument('<slug>')
+    .requiredOption('--origin <origin...>', 'allowed origins')
+    .action(async function (this: Command, slug: string, opts: { origin: string[] }) {
+      const g = globals(this);
+      const origins = await storageCorsCommand(await depsFactory(io), {
+        slug,
+        origins: opts.origin,
+      });
+      emit(io, g, { origins }, `${origins.join('\n')}\n`);
     });
   program
     .command('sync-pgbouncer', { hidden: true })
