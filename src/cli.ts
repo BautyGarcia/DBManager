@@ -1,6 +1,7 @@
 import { Command, CommanderError } from 'commander';
 import pc from 'picocolors';
 import { makeFileStore } from './adapters/store.js';
+import { backupCommand, restoreCommand } from './commands/backup.js';
 import { type Deps, makeDeps } from './commands/context.js';
 import { createCommand } from './commands/create.js';
 import { destroyCommand } from './commands/destroy.js';
@@ -164,6 +165,32 @@ export function buildProgram(io: Io, depsFactory: DepsFactory = defaultDepsFacto
         ...(opts.confirm ? { confirmSlug: opts.confirm } : {}),
       });
       emit(io, g, r, `destroyed ${r.slug}\n`);
+    });
+
+  program
+    .command('backup')
+    .description('Run an on-demand off-site backup and list dumps')
+    .argument('<slug>')
+    .action(async function (this: Command, slug: string) {
+      const g = globals(this);
+      const r = await backupCommand(await depsFactory(io), slug);
+      emit(io, g, r, `${r.files.map((f) => `${f.ModTime}  ${f.Name}`).join('\n')}\n`);
+    });
+
+  program
+    .command('restore')
+    .description('Restore a dump (id or "latest"), optionally into a new project with --as')
+    .argument('<slug>')
+    .argument('<backup-id>')
+    .option('--as <newslug>', 'restore into a freshly created project')
+    .action(async function (this: Command, slug: string, backupId: string, opts: { as?: string }) {
+      const g = globals(this);
+      const r = await restoreCommand(await depsFactory(io), {
+        slug,
+        backupId,
+        ...(opts.as ? { as: opts.as } : {}),
+      });
+      emit(io, g, r, `restored ${r.file} into ${r.target}\n`);
     });
 
   return program;
