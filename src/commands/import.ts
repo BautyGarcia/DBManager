@@ -130,7 +130,8 @@ export async function importCommand(deps: Deps, o: ImportOptions): Promise<Impor
 
   let storageSynced = false;
   if (o.storage && p.storage) {
-    deps.io.err(`syncing storage bucket ${o.storage.bucket} -> ${p.storage.bucket}...\n`);
+    // `copy`, never `sync`: an import must not delete objects already in the target bucket.
+    deps.io.err(`copying storage bucket ${o.storage.bucket} -> ${p.storage.bucket}...\n`);
     const conf = `[src]\ntype = s3\nprovider = Other\nenv_auth = false\naccess_key_id = ${o.storage.keyId}\nsecret_access_key = ${o.storage.keySecret}\nendpoint = ${o.storage.endpoint}\nregion = ${o.storage.region}\nforce_path_style = true\n\n[dst]\ntype = s3\nprovider = Other\nenv_auth = false\naccess_key_id = ${p.storage.keyId}\nsecret_access_key = ${p.storage.keySecret}\nendpoint = http://${deps.cfg.remote.garageContainer}:3900\nregion = garage\nforce_path_style = true\nno_check_bucket = true\n`;
     await deps.ssh.run(
       [
@@ -143,7 +144,7 @@ export async function importCommand(deps: Deps, o: ImportOptions): Promise<Impor
         IMAGES.rclone,
         '--config',
         '/dev/stdin',
-        'sync',
+        'copy',
         `src:${o.storage.bucket}`,
         `dst:${p.storage.bucket}`,
         '--size-only',
@@ -163,7 +164,7 @@ export function formatReport(r: ImportReport): string {
       ? `\n${title} (${lines.length})\n  hint: ${hint}\n${lines.map((l) => `  ${l}`).join('\n')}\n`
       : '';
   return [
-    `import into ${r.slug}: schemas ${r.schemas.join(', ')}${r.storageSynced ? ', storage synced' : ''}`,
+    `import into ${r.slug}: schemas ${r.schemas.join(', ')}${r.storageSynced ? ', storage copied' : ''}`,
     sec(
       'Foreign keys / references to auth.users',
       r.errors.authUsers,

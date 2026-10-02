@@ -50,11 +50,15 @@ export interface StorageSyncCronOptions {
   storageBucket: string;
 }
 
-/** /etc/cron.d/dbm-storage-sync: mirror every Garage bucket the read-only key can see, plus metadata snapshots. */
+/**
+ * /etc/cron.d/dbm-storage-sync: mirror every Garage bucket the read-only key can see, plus metadata
+ * snapshots. `--max-delete 50` caps the damage when the key suddenly sees less (a wiped or
+ * re-initialised Garage would otherwise delete the off-site mirror; B2 keeps versions 30 days).
+ */
 export function renderStorageSyncCron(o: StorageSyncCronOptions): string {
   const run = `docker run --rm --network ${o.network} -v ${o.rcloneConfDir}/rclone.conf:/config/rclone/rclone.conf:ro -v dbm-garage-snapshots:/snapshots:ro ${IMAGES.rclone}`;
   return `SHELL=/bin/sh
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-${STORAGE_SYNC_CRON} root ${run} sync garage: b2:${o.storageBucket}/storage --fast-list --transfers 4 >>/var/log/dbm-storage-sync.log 2>&1; ${run} copy /snapshots b2:${o.storageBucket}/garage-meta >>/var/log/dbm-storage-sync.log 2>&1
+${STORAGE_SYNC_CRON} root ${run} sync garage: b2:${o.storageBucket}/storage --fast-list --transfers 4 --max-delete 50 >>/var/log/dbm-storage-sync.log 2>&1; ${run} copy /snapshots b2:${o.storageBucket}/garage-meta >>/var/log/dbm-storage-sync.log 2>&1
 `;
 }

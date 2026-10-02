@@ -34,6 +34,8 @@ describe('renderHardenScript', () => {
     expect(script).toContain('100.64.0.0/10');
     expect(script).toContain('timedatectl set-timezone "America/Argentina/Buenos_Aires"');
     expect(script).not.toContain('--ctorigdstport 3000');
+    // sshd's default (6) leaves room for operators whose agent offers several keys.
+    expect(script).not.toContain('MaxAuthTries');
   });
   it('parameterises ports', () => {
     const s = renderHardenScript({ ...DEFAULT_HARDEN, sshPort: 2222, publicTcpPorts: [443] });

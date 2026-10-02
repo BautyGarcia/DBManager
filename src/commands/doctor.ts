@@ -18,6 +18,8 @@ export const MIN_VERSIONS = {
   pg17: '17.11',
 } as const;
 const DAY = 86_400_000;
+/** Nightly backups: anything older than a day and a half means a missed run. */
+const BACKUP_MAX_AGE_HOURS = 36;
 
 export function versionAtLeast(actual: string, floor: string): boolean {
   const a =
@@ -194,9 +196,11 @@ export async function doctorCommand(deps: Deps): Promise<{ checks: Check[]; ok: 
           : `${dataDir} is NOT under any mount: data would be lost on recreate`,
       );
     });
-    await attempt(
-      `${p.slug}.backup.age`,
-      async () => {
+    const ageHours = Math.floor((now - new Date(p.createdAt).getTime()) / 3_600_000);
+    if (ageHours < BACKUP_MAX_AGE_HOURS) {
+      add(`${p.slug}.backup.age`, true, `new project (${ageHours}h), no backup expected yet`);
+    } else {
+      await attempt(`${p.slug}.backup.age`, async () => {
         const files = await deps.dokploy.listBackupFiles(
           deps.cfg.dumpsDestinationId,
           `${p.dokploy.appName}/${deriveNames(p.slug).backupPrefix}/`,
@@ -208,13 +212,11 @@ export async function doctorCommand(deps: Deps): Promise<{ checks: Check[]; ok: 
         const hours = newest ? Math.floor((now - newest) / 3_600_000) : undefined;
         add(
           `${p.slug}.backup.age`,
-          hours !== undefined && hours < 36,
-          hours === undefined ? 'no backups yet' : `${hours}h ago`,
-          'warn',
+          hours !== undefined && hours < BACKUP_MAX_AGE_HOURS,
+          hours === undefined ? 'no backups found' : `${hours}h ago`,
         );
-      },
-      'warn',
-    );
+      });
+    }
     if (p.storage) {
       const bucketId = p.storage.bucketId;
       await attempt(

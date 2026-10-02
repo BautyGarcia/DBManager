@@ -6,7 +6,8 @@ import { makeFakeRunner } from '../helpers/fake-runner.js';
 import { makeTestDeps } from '../helpers/fakes.js';
 import { fakeProject } from '../helpers/project.js';
 
-const p = fakeProject('my-app');
+// Older than the 36h new-project grace period, so backup.age is really checked.
+const p = fakeProject('my-app', { createdAt: '2026-09-01T00:00:00.000Z' });
 const ini = renderPgbouncerIni([p], { certDir: '/certs/db.example.com' });
 const userlist = renderUserlist([p]);
 const in60d = new Date(Date.now() + 60 * 86400_000).toISOString();
@@ -83,7 +84,7 @@ describe('doctor', () => {
       ]),
     );
   });
-  it('fails on an old PgBouncer and warns on a stale backup', async () => {
+  it('fails on an old PgBouncer and on a stale backup', async () => {
     const t = makeTestDeps({
       runner: healthyRunner([{ match: /pgbouncer --version/, stdout: 'PgBouncer 1.25.2' }]),
     });
@@ -99,8 +100,50 @@ describe('doctor', () => {
     });
     expect(r.checks.find((c) => c.name === 'my-app.backup.age')).toMatchObject({
       ok: false,
-      level: 'warn',
+      level: 'fail',
     });
+  });
+  it('a stale backup alone fails doctor (fail level, not warn)', async () => {
+    const t = makeTestDeps({ runner: healthyRunner() });
+    t.store.state = upsertProject(t.store.state, p);
+    t.pg.runSql = async (_t, sql) =>
+      sql.includes('server_version') ? '18.6' : '/var/lib/postgresql/18/docker';
+    t.dokploy.files = [{ Path: 'x', Name: 'x', Size: 1, ModTime: '2026-09-28T12:00:00Z' }];
+    const r = await doctorCommand(t.deps);
+    expect(r.checks.find((c) => c.name === 'my-app.backup.age')).toMatchObject({
+      ok: false,
+      level: 'fail',
+      detail: '48h ago',
+    });
+    expect(r.ok).toBe(false);
+  });
+  it('no backups at all on an established project fails', async () => {
+    const t = makeTestDeps({ runner: healthyRunner() });
+    t.store.state = upsertProject(t.store.state, p);
+    t.pg.runSql = async (_t, sql) =>
+      sql.includes('server_version') ? '18.6' : '/var/lib/postgresql/18/docker';
+    const r = await doctorCommand(t.deps);
+    expect(r.checks.find((c) => c.name === 'my-app.backup.age')).toMatchObject({
+      ok: false,
+      level: 'fail',
+    });
+    expect(r.ok).toBe(false);
+  });
+  it('a project younger than 36h is ok without backups (grace period)', async () => {
+    const t = makeTestDeps({ runner: healthyRunner() });
+    t.store.state = upsertProject(
+      t.store.state,
+      fakeProject('my-app', { createdAt: '2026-09-30T00:00:00.000Z' }),
+    );
+    t.pg.runSql = async (_t, sql) =>
+      sql.includes('server_version') ? '18.6' : '/var/lib/postgresql/18/docker';
+    const r = await doctorCommand(t.deps);
+    expect(r.checks.find((c) => c.name === 'my-app.backup.age')).toMatchObject({
+      ok: true,
+      detail: 'new project (12h), no backup expected yet',
+    });
+    expect(t.dokploy.calls).not.toContain('listBackupFiles');
+    expect(r.ok).toBe(true);
   });
   it('fails docker.logging when log rotation is absent', async () => {
     const t = makeTestDeps({
@@ -136,9 +179,20 @@ describe('doctor', () => {
     t.store.state = upsertProject(t.store.state, p);
     t.pg.runSql = async (_t, sql) =>
       sql.includes('server_version') ? '18.6' : '/var/lib/postgresql/18/docker';
-    t.dokploy.files = [{ Path: 'x', Name: 'x', Size: 1, ModTime: '2026-09-01T00:00:00Z' }];
+    t.dokploy.files = [{ Path: 'x', Name: 'x', Size: 1, ModTime: t.deps.now().toISOString() }];
+    t.garage.buckets.set('b1', {
+      id: 'b1',
+      globalAliases: ['my-app'],
+      bytes: 0,
+      objects: 0,
+      unfinishedUploads: 80,
+      websiteAccess: false,
+    });
     const r = await doctorCommand(t.deps);
-    expect(r.checks.find((c) => c.name === 'my-app.backup.age')?.ok).toBe(false);
+    expect(r.checks.find((c) => c.name === 'my-app.storage.uploads')).toMatchObject({
+      ok: false,
+      level: 'warn',
+    });
     expect(r.ok).toBe(true);
   });
   it('versionAtLeast', () => {

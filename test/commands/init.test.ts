@@ -165,8 +165,8 @@ describe('init', () => {
     expect(h.store.state.projects['dbm-smoke']).toBeUndefined();
     const harden = h.runner.calls.find((c) => c.argv.join(' ') === 'bash -s');
     expect(harden?.input).toContain('set -euo pipefail');
-    // secrets do not outlive a successful init on this machine
-    expect(h.store.progress.values).toEqual({});
+    // secrets do not outlive a successful init on this machine; only the target host is kept
+    expect(h.store.progress.values).toEqual({ host: '1.2.3.4' });
     expect(Object.keys(h.store.progress.done)).toEqual([...INIT_STEPS]);
   });
   it('resumes: completed steps are skipped on re-run', async () => {
@@ -318,12 +318,57 @@ describe('init', () => {
     const second = h.dokploy.calls.slice(before);
     expect(second.filter((c) => c === 'createCompose')).toHaveLength(0);
     expect(h.garage.calls.filter((c) => c === 'createAdminToken')).toHaveLength(1);
-    expect(h.store.progress.values).toEqual({});
+    expect(h.store.progress.values).toEqual({ host: '1.2.3.4' });
   });
   it('self-ca fails when the CA script prints no certificate', async () => {
     const h = harness();
     await expect(
       initCommand(h.store, h.io, { ...opts, tls: 'self-ca' }, h.adapters),
     ).rejects.toThrow(/did not print a certificate/);
+  });
+  it('a re-run against a different host starts from scratch (VPS lost)', async () => {
+    const h = harness();
+    await initCommand(h.store, h.io, opts, h.adapters);
+    expect(h.store.progress.values.host).toBe('1.2.3.4');
+    // Same host: everything is skipped.
+    h.runner.calls.length = 0;
+    await initCommand(h.store, h.io, opts, h.adapters);
+    expect(h.runner.calls.some((c) => c.argv.join(' ') === 'bash -s')).toBe(false);
+    // New host: nothing is kept, every step runs again.
+    h.errLines.length = 0;
+    h.runner.calls.length = 0;
+    await initCommand(h.store, h.io, { ...opts, host: '5.6.7.8' }, h.adapters);
+    expect(h.errLines.join('')).toMatch(/host changed: starting init from scratch/);
+    expect(h.errLines.join('')).not.toMatch(/skip harden/);
+    expect(h.runner.calls.some((c) => c.argv.join(' ') === 'bash -s')).toBe(true);
+    expect(Object.keys(h.store.progress.done)).toEqual([...INIT_STEPS]);
+    expect(h.store.progress.values).toEqual({ host: '5.6.7.8' });
+    expect((await h.store.requireConfig()).sshHost).toBe('5.6.7.8');
+  });
+  it('a host change also discards values minted for the old host', async () => {
+    const h = harness();
+    h.store.progress = {
+      done: { harden: true, tailscale: true },
+      values: { host: '9.9.9.9', tailnetUrl: 'https://old.ts.net', garageMasterToken: 'old' },
+    };
+    await initCommand(h.store, h.io, opts, h.adapters);
+    expect(h.errLines.join('')).toMatch(/host changed/);
+    expect((await h.store.requireConfig()).dokployUrl).toBe('https://dbm-vps.tail1234.ts.net');
+  });
+  it.each(['Europe/Berlin; rm -rf /', '$(id)', 'a b', ''])(
+    'rejects --timezone %j before touching the host',
+    async (tz) => {
+      const h = harness();
+      await expect(
+        initCommand(h.store, h.io, { ...opts, timezone: tz }, h.adapters),
+      ).rejects.toMatchObject({ exitCode: 1 });
+      expect(h.runner.calls).toEqual([]);
+    },
+  );
+  it('accepts IANA timezones and passes them to the hardening script', async () => {
+    const h = harness();
+    await initCommand(h.store, h.io, { ...opts, timezone: 'Etc/GMT+3' }, h.adapters);
+    const harden = h.runner.calls.find((c) => c.argv.join(' ') === 'bash -s');
+    expect(harden?.input).toContain('timedatectl set-timezone "Etc/GMT+3"');
   });
 });

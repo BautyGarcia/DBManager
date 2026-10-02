@@ -64,7 +64,6 @@ PermitRootLogin prohibit-password
 PubkeyAuthentication yes
 PermitEmptyPasswords no
 X11Forwarding no
-MaxAuthTries 4
 LoginGraceTime 30
 EOT
   sshd -t

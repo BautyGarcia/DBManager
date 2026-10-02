@@ -139,6 +139,8 @@ export const realInitAdapters: InitAdapters = {
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+export const TIMEZONE_RE = /^[A-Za-z0-9_+/-]+$/;
+
 export async function initCommand(
   store: StateStore,
   io: Io,
@@ -149,6 +151,12 @@ export async function initCommand(
   const tls = o.tls ?? 'letsencrypt';
   const hostname = o.hostname ?? 'dbm-vps';
   const timezone = o.timezone ?? DEFAULT_HARDEN.timezone;
+  // Interpolated into the hardening script: only IANA-name characters.
+  if (!TIMEZONE_RE.test(timezone))
+    throw userError(
+      `invalid --timezone ${JSON.stringify(timezone)}: use an IANA name like America/Argentina/Buenos_Aires`,
+      'init',
+    );
   const dbHost = `db.${o.domain}`;
   const s3Host = `s3.${o.domain}`;
   const webDomain = `web.${o.domain}`;
@@ -165,7 +173,16 @@ export async function initCommand(
     dbPort: 6432,
   };
   const ssh = a.makeRunner(o.host, user);
-  const progress: InitProgress = await store.loadInitProgress();
+  let progress: InitProgress = await store.loadInitProgress();
+  if (progress.values.host !== undefined && progress.values.host !== o.host) {
+    // VPS lost / moved: steps done on the old host mean nothing on the new one.
+    io.err(
+      `host changed: starting init from scratch (was ${progress.values.host}, now ${o.host})\n`,
+    );
+    progress = { done: {}, values: {} };
+  }
+  progress.values.host = o.host;
+  await store.saveInitProgress(progress);
   const v = progress.values;
   /** Persist values minted mid-step (secrets, tokens, keys) so a failed step re-run reuses them. */
   const checkpoint = () => store.saveInitProgress(progress);
@@ -671,7 +688,8 @@ cat ca.crt
     await store.saveInitProgress(progress);
   }
   // Spec 5.4: intermediate secrets (Garage master token, B2 secret, ...) must not stay on this machine.
-  await store.saveInitProgress({ done: progress.done, values: {} });
+  // The target host is kept (not a secret) so a later init against a different host starts over.
+  await store.saveInitProgress({ done: progress.done, values: { host: o.host } });
   const cfg = await store.requireConfig();
   io.err(
     `\ninit complete.\n  dashboard: ${cfg.dokployUrl}\n  database:  ${cfg.dbHost}:6432 (TLS, ${cfg.tls})\n  storage:   https://${cfg.s3Host}\n\nFrom a machine outside the tailnet verify:\n  nc -zv -w3 ${quote(o.host)} 3000   # must FAIL\n  nc -zv -w3 ${quote(cfg.dbHost)} 6432  # must succeed\n`,

@@ -63,7 +63,7 @@ describe('importCommand', () => {
           '---SCHEMA-ERRORS---\npsql:x: ERROR:  relation "auth.users" does not exist\n---DATA-ERRORS---\n---END---',
       },
       {
-        match: /rclone\/rclone:1 --config \/dev\/stdin sync src:avatars dst:my-app/,
+        match: /rclone\/rclone:1 --config \/dev\/stdin copy src:avatars dst:my-app --size-only/,
         stdout: '',
       },
     ]);
@@ -82,6 +82,10 @@ describe('importCommand', () => {
     });
     expect(r.errors.authUsers).toHaveLength(1);
     expect(r.storageSynced).toBe(true);
+    const rc = t.runner.calls.find((c) => c.argv.includes('rclone/rclone:1'));
+    // copy, never sync: objects already in the target bucket must survive an import
+    expect(rc?.argv).toContain('copy');
+    expect(rc?.argv).not.toContain('sync');
     const dump = t.runner.calls.find((c) => c.argv.join(' ').includes('bash -s'));
     expect(dump?.argv.join(' ')).not.toContain('pw@');
     expect(dump?.input).toContain('db.ref.supabase.co');

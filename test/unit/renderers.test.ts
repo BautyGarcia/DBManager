@@ -120,6 +120,9 @@ describe('host files', () => {
     expect(s).toMatch(/^30 6 \* \* \* root /m);
     expect(s).toContain(IMAGES.rclone);
     expect(s).toContain('sync garage: b2:dbm-storage/storage');
+    expect(s).toContain(
+      'sync garage: b2:dbm-storage/storage --fast-list --transfers 4 --max-delete 50 >>',
+    );
     expect(s).toContain('copy /snapshots b2:dbm-storage/garage-meta');
     expect(s).toContain('--network dokploy-network');
   });
