@@ -8,6 +8,8 @@ import { destroyCommand } from './commands/destroy.js';
 import { envCommand } from './commands/env.js';
 import { formatTable, listCommand } from './commands/list.js';
 import { pauseCommand, resumeCommand } from './commands/pause.js';
+import { psqlCommand } from './commands/psql.js';
+import { syncPgbouncerCommand } from './commands/sync-pgbouncer.js';
 import { formatEnvBlock } from './core/env.js';
 import { DbmError, ExitCode, userError } from './core/exit.js';
 import { VERSION } from './version.js';
@@ -199,6 +201,23 @@ export function buildProgram(io: Io, depsFactory: DepsFactory = defaultDepsFacto
         ...(opts.confirm ? { confirmSlug: opts.confirm } : {}),
       });
       emit(io, g, r, `restored ${r.file} into ${r.target}\n`);
+    });
+
+  program
+    .command('psql')
+    .description('Interactive psql in the project container')
+    .argument('<slug>')
+    .option('--admin', 'connect as the superuser', false)
+    .action(async function (this: Command, slug: string, opts: { admin: boolean }) {
+      const code = await psqlCommand(await depsFactory(io), slug, opts.admin);
+      if (code !== 0)
+        throw new DbmError(`psql exited with ${code}`, ExitCode.RemoteFailure, 'psql');
+    });
+  program
+    .command('sync-pgbouncer', { hidden: true })
+    .description('Re-render PgBouncer config from state and reload')
+    .action(async () => {
+      await syncPgbouncerCommand(await depsFactory(io));
     });
 
   return program;
