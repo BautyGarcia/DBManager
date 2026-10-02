@@ -8,7 +8,17 @@ import { CERT_DIR, COMPOSE_DIR } from './testcfg.js';
 
 const compose = ['compose', '-f', join(COMPOSE_DIR, 'compose.yaml')];
 
+/** Idempotent: safe when nothing is running. */
+async function down(): Promise<void> {
+  await execa('docker', [...compose, 'down', '-v', '--remove-orphans', '-t', '5'], {
+    stdio: 'inherit',
+    reject: false,
+  });
+}
+
 export default async function setup(_project: TestProject) {
+  // Clear leftovers from a previous crashed run (fixed container names, ports, network).
+  await down();
   await mkdir(join(COMPOSE_DIR, 'pgbouncer'), { recursive: true });
   await mkdir(join(COMPOSE_DIR, 'garage'), { recursive: true });
   await mkdir(CERT_DIR, { recursive: true });
@@ -44,14 +54,16 @@ export default async function setup(_project: TestProject) {
     join(COMPOSE_DIR, 'garage', 'garage.toml'),
     renderGarageToml({ webDomain: 'web.test.local' }),
   );
-  await execa('docker', [...compose, 'up', '-d', '--wait', '--wait-timeout', '180'], {
-    stdio: 'inherit',
-  });
+  try {
+    await execa('docker', [...compose, 'up', '-d', '--wait', '--wait-timeout', '180'], {
+      stdio: 'inherit',
+    });
+  } catch (e) {
+    // Vitest only registers the teardown below if setup returns, so clean up here.
+    if (process.env.DBM_TEST_KEEP !== '1') await down();
+    throw e;
+  }
   return async () => {
-    if (process.env.DBM_TEST_KEEP !== '1') {
-      await execa('docker', [...compose, 'down', '-v', '--remove-orphans', '-t', '5'], {
-        stdio: 'inherit',
-      });
-    }
+    if (process.env.DBM_TEST_KEEP !== '1') await down();
   };
 }
