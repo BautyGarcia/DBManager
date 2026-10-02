@@ -16,6 +16,7 @@ import { type Project, removeProject, upsertProject } from '../core/state.js';
 import { parseMemory } from '../core/units.js';
 import { adminTarget, type Deps, waitUntil } from './context.js';
 import { applyPgbouncer } from './pgbouncer-apply.js';
+import { removeVolume } from './volumes.js';
 
 export interface CreateOptions {
   slug: string;
@@ -132,9 +133,7 @@ export async function createCommand(deps: Deps, o: CreateOptions): Promise<Creat
     // Undos run in reverse: pushing the volume first means the service is removed before its volume (spec section 7).
     undos.push({
       what: `remove volume ${appName}-data`,
-      run: async () => {
-        await deps.ssh.run(['docker', 'volume', 'rm', `${appName}-data`]);
-      },
+      run: () => removeVolume(deps, appName),
     });
     undos.push({
       what: `remove Dokploy service ${appName}`,

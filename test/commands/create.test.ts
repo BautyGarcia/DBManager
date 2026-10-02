@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createCommand } from '../../src/commands/create.js';
 import { DbmError } from '../../src/core/exit.js';
 import { upsertProject } from '../../src/core/state.js';
+import { makeFakeRunner } from '../helpers/fake-runner.js';
 import { FakeDokploy, FakeGarage, makeTestDeps } from '../helpers/fakes.js';
 import { fakeProject } from '../helpers/project.js';
 
@@ -71,6 +72,159 @@ describe('createCommand', () => {
     expect(saved?.dokploy.backupId).toBe('bk_1');
     expect(saved?.storage?.bucketId).toBe('b_1');
     expect(t.outLines.join('')).toBe('');
+    // arguments that reached the adapters
+    expect(t.dokploy.inputs.createPostgres).toEqual([
+      [
+        expect.objectContaining({
+          name: 'pg-my-app',
+          appName: 'pg-my-app',
+          databaseName: 'postgres',
+          databaseUser: 'my_app_admin',
+          environmentId: 'env_1',
+          dockerImage: 'postgres:18',
+        }),
+      ],
+    ]);
+    expect(t.dokploy.inputs.updatePostgres).toEqual([
+      [{ postgresId: 'pg_1', memoryLimit: '536870912' }],
+    ]);
+    const key = saved?.storage?.keyId;
+    expect(key).toBe('GK2');
+    expect(t.garage.inputs.allowBucketKey).toEqual([
+      ['b_1', 'GK2', { read: true, write: true }],
+      ['b_1', 'GKbackup', { read: true }],
+    ]);
+    expect(t.garage.inputs.updateBucket).toEqual([
+      [
+        'b_1',
+        {
+          corsRules: [
+            {
+              allowedOrigins: ['*'],
+              allowedMethods: ['GET', 'PUT', 'POST', 'DELETE', 'HEAD'],
+              allowedHeaders: ['*'],
+              exposeHeaders: ['ETag'],
+              maxAgeSeconds: 3600,
+            },
+          ],
+        },
+      ],
+    ]);
+    expect(t.pg.inputs.ping).toEqual([
+      [{ appName: 'pg-my-app-abc123', role: 'my_app_admin', database: 'postgres' }],
+      [{ appName: 'pg-my-app-abc123', role: 'my_app_admin', database: 'postgres' }],
+    ]);
+    const probe = t.pg.inputs.pingViaPgbouncer?.[0]?.[0] as string;
+    expect(t.pg.inputs.pingViaPgbouncer).toHaveLength(1);
+    expect(probe).toMatch(
+      /^postgresql:\/\/my_app_app:[A-Za-z0-9_-]{43}@dbm-pgbouncer:6432\/my-app\?/,
+    );
+    expect(probe).toContain(`:${saved?.postgres.appPassword}@`);
+  });
+
+  it('--cors-origin values pass through to the bucket CORS rule', async () => {
+    const t = makeTestDeps();
+    await createCommand(t.deps, {
+      slug: 'my-app',
+      corsOrigins: ['https://a.example', 'http://localhost:3000'],
+    });
+    const patch = t.garage.inputs.updateBucket?.[0]?.[1] as {
+      corsRules: Array<{ allowedOrigins: string[] }>;
+    };
+    expect(patch.corsRules[0]?.allowedOrigins).toEqual([
+      'https://a.example',
+      'http://localhost:3000',
+    ]);
+    expect(t.store.state.projects['my-app']?.storage?.corsOrigins).toEqual([
+      'https://a.example',
+      'http://localhost:3000',
+    ]);
+  });
+
+  it('an updatePostgres failure removes the service and its volume, nothing else', async () => {
+    const dokploy = new FakeDokploy();
+    dokploy.failAt.add('updatePostgres');
+    const t = makeTestDeps({ dokploy });
+    await expect(createCommand(t.deps, { slug: 'my-app' })).rejects.toMatchObject({
+      exitCode: 2,
+      step: 'dokploy.updatePostgres',
+    });
+    expect(t.dokploy.calls).toEqual([
+      'getProject',
+      'createPostgres',
+      'updatePostgres',
+      'removePostgres',
+    ]);
+    expect(t.runner.calls.map((c) => c.argv.join(' '))).toEqual([
+      'docker volume rm pg-my-app-abc123-data',
+    ]);
+    expect(t.runner.uploads).toEqual([]);
+    expect(t.garage.calls).toEqual([]);
+    expect(t.store.saves).toBe(0);
+    expect(t.store.state.projects['my-app']).toBeUndefined();
+  });
+
+  it('an early failure where the volume was never created still exits 2, not 3', async () => {
+    const dokploy = new FakeDokploy();
+    dokploy.failAt.add('updatePostgres');
+    const runner = makeFakeRunner([
+      {
+        match: /^docker volume rm /,
+        fail: true,
+        stderr: 'Error: No such volume: pg-my-app-abc123-data',
+      },
+    ]);
+    const t = makeTestDeps({ dokploy, runner });
+    await expect(createCommand(t.deps, { slug: 'my-app' })).rejects.toMatchObject({
+      exitCode: 2,
+      step: 'dokploy.updatePostgres',
+    });
+  });
+
+  it('a pgbouncer.verify failure re-renders PgBouncer without the project and removes postgres', async () => {
+    const t = makeTestDeps();
+    t.pg.pgbouncerPing = false;
+    await expect(createCommand(t.deps, { slug: 'my-app' })).rejects.toMatchObject({
+      exitCode: 2,
+      step: 'pgbouncer.verify',
+    });
+    expect(t.dokploy.calls.at(-1)).toBe('removePostgres');
+    expect(t.garage.calls).toEqual([]);
+    const inis = t.runner.uploads.filter((u) => u.path.endsWith('pgbouncer.ini'));
+    expect(inis).toHaveLength(2);
+    expect(inis[0]?.content).toContain('my-app = ');
+    expect(inis[1]?.content).not.toContain('my-app');
+    expect(t.runner.uploads.at(-1)?.content).toBe('');
+    const cmds = t.runner.calls.map((c) => c.argv.join(' '));
+    expect(cmds.filter((c) => c === 'docker kill -s HUP dbm-pgbouncer')).toHaveLength(2);
+    expect(cmds.at(-1)).toBe('docker volume rm pg-my-app-abc123-data');
+    expect(t.store.state.projects['my-app']).toBeUndefined();
+  });
+
+  it('a createBackup failure undoes key, bucket, pgbouncer, service and volume', async () => {
+    const dokploy = new FakeDokploy();
+    dokploy.failAt.add('createBackup');
+    const t = makeTestDeps({ dokploy });
+    await expect(createCommand(t.deps, { slug: 'my-app' })).rejects.toMatchObject({
+      exitCode: 2,
+      step: 'dokploy.createBackup',
+    });
+    expect(t.dokploy.calls.slice(-2)).toEqual(['createBackup', 'removePostgres']);
+    expect(t.dokploy.calls).not.toContain('removeBackup');
+    expect(t.garage.calls.slice(-3)).toEqual([
+      'deleteKey',
+      'cleanupIncompleteUploads',
+      'deleteBucket',
+    ]);
+    expect(t.garage.keys.size).toBe(0);
+    expect(t.garage.buckets.size).toBe(0);
+    expect(
+      t.runner.uploads.filter((u) => u.path.endsWith('pgbouncer.ini')).at(-1)?.content,
+    ).not.toContain('my-app');
+    expect(t.runner.calls.map((c) => c.argv.join(' ')).at(-1)).toBe(
+      'docker volume rm pg-my-app-abc123-data',
+    );
+    expect(t.store.state.projects['my-app']).toBeUndefined();
   });
 
   it('re-running on an existing slug is a no-op with zero adapter calls (Review Focus 2)', async () => {
@@ -178,6 +332,10 @@ describe('createCommand', () => {
     expect(r.env.S3_BUCKET).toBeUndefined();
     expect(t.garage.calls).toEqual([]);
     expect(t.store.state.projects.a1?.pgMajor).toBe(17);
+    expect(t.dokploy.inputs.createPostgres?.[0]?.[0]).toMatchObject({
+      dockerImage: 'postgres:17',
+      environmentId: 'env_1',
+    });
     await expect(createCommand(t.deps, { slug: 'a2', extensions: ['x;y'] })).rejects.toMatchObject({
       exitCode: 1,
     });

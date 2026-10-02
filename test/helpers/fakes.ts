@@ -8,6 +8,8 @@ import type {
   DokployProject,
   GarageAdmin,
   GarageBucketInfo,
+  GarageCorsRule,
+  GaragePermissions,
   PgTarget,
   PostgresAdmin,
   PostgresStatus,
@@ -40,6 +42,11 @@ export function fail(step: string, msg = 'boom'): never {
 
 export class FakeDokploy implements DokployClient {
   calls: string[] = [];
+  /** Arguments of every call, keyed by method name; one tuple per call. */
+  inputs: Record<string, unknown[][]> = {};
+  private record(method: string, ...args: unknown[]) {
+    this.inputs[method] = [...(this.inputs[method] ?? []), args];
+  }
   postgres = new Map<
     string,
     DokployPostgres & { status: PostgresStatus; volumeExists: boolean; running: boolean }
@@ -112,8 +119,11 @@ export class FakeDokploy implements DokployClient {
     databaseName: string;
     databaseUser: string;
     databasePassword: string;
+    environmentId: string;
+    dockerImage: string;
   }) {
     this.guard('createPostgres');
+    this.record('createPostgres', input);
     if (!/^[A-Za-z0-9]+$/.test(input.databasePassword))
       fail('dokploy.createPostgres', 'Invalid password');
     if (this.existingNames.has(input.name))
@@ -131,8 +141,9 @@ export class FakeDokploy implements DokployClient {
     this.postgres.set(row.postgresId, row);
     return row;
   }
-  async updatePostgres() {
+  async updatePostgres(input: { postgresId: string; memoryLimit?: string; cpuLimit?: string }) {
     this.guard('updatePostgres');
+    this.record('updatePostgres', input);
   }
   async deployPostgres(id: string) {
     this.guard('deployPostgres');
@@ -219,6 +230,11 @@ export class FakeDokploy implements DokployClient {
 
 export class FakePg implements PostgresAdmin {
   sql: Array<{ target: PgTarget; sql: string }> = [];
+  /** Arguments of every call, keyed by method name; one tuple per call. */
+  inputs: Record<string, unknown[][]> = {};
+  private record(method: string, ...args: unknown[]) {
+    this.inputs[method] = [...(this.inputs[method] ?? []), args];
+  }
   pingResults: boolean[] = [];
   pgbouncerPing = true;
   failAt = new Set<string>();
@@ -230,16 +246,23 @@ export class FakePg implements PostgresAdmin {
     this.sql.push({ target, sql });
     return '';
   }
-  async ping() {
+  async ping(target: PgTarget) {
+    this.record('ping', target);
     return this.pingResults.length ? (this.pingResults.shift() as boolean) : true;
   }
-  async pingViaPgbouncer() {
+  async pingViaPgbouncer(url: string) {
+    this.record('pingViaPgbouncer', url);
     return this.pgbouncerPing;
   }
 }
 
 export class FakeGarage implements GarageAdmin {
   calls: string[] = [];
+  /** Arguments of every call, keyed by method name; one tuple per call. */
+  inputs: Record<string, unknown[][]> = {};
+  private record(method: string, ...args: unknown[]) {
+    this.inputs[method] = [...(this.inputs[method] ?? []), args];
+  }
   buckets = new Map<string, GarageBucketInfo & { objects: number }>();
   keys = new Map<string, { name: string }>();
   failAt = new Set<string>();
@@ -281,14 +304,19 @@ export class FakeGarage implements GarageAdmin {
     this.keys.set(id, { name });
     return { accessKeyId: id, secretAccessKey: `S${id}` };
   }
-  async allowBucketKey() {
+  async allowBucketKey(bucketId: string, accessKeyId: string, perms: GaragePermissions) {
     this.guard('allowBucketKey');
+    this.record('allowBucketKey', bucketId, accessKeyId, perms);
   }
   async denyBucketKey() {
     this.guard('denyBucketKey');
   }
-  async updateBucket(id: string, patch: { websiteAccess?: { enabled: boolean } }) {
+  async updateBucket(
+    id: string,
+    patch: { corsRules?: GarageCorsRule[]; websiteAccess?: { enabled: boolean } },
+  ) {
     this.guard('updateBucket');
+    this.record('updateBucket', id, patch);
     const b = this.buckets.get(id);
     if (b && patch.websiteAccess) b.websiteAccess = patch.websiteAccess.enabled;
   }
