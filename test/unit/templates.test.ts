@@ -29,6 +29,15 @@ describe('templates/nextjs', () => {
       '"http://localhost:3000"',
     );
   });
+  it('drizzle.config.ts uses DATABASE_URL_SESSION only and verifies TLS', () => {
+    const s = readFileSync('templates/nextjs/drizzle.config.ts', 'utf8');
+    expect(s).toContain('process.env.DATABASE_URL_SESSION;');
+    expect(s).not.toMatch(/process\.env\.DATABASE_URL\b(?!_)/);
+    expect(s).toContain('throw new Error(');
+    expect(s).toContain('"verify-full"');
+    expect(s).toContain('process.env.DATABASE_SSL_CA.replace(/\\\\n/g, "\\n")');
+    expect(s).toMatch(/dbCredentials: \{[\s\S]*ssl,\n/);
+  });
   it('vercel.json pins gru1', () => {
     expect(JSON.parse(readFileSync('templates/nextjs/vercel.json', 'utf8'))).toEqual({
       $schema: 'https://openapi.vercel.sh/vercel.json',

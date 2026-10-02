@@ -2,7 +2,7 @@
 
 Step-by-step procedures. None of them has been exercised on a real VPS yet; `scripts/e2e.sh` covers create, pause, resume, backup, restore and destroy, but not the disaster scenarios below. Treat the manual steps as untested and read them through before you need them.
 
-Conventions: `<slug>` is the project name, `<slug_db>` is the slug with `-` replaced by `_`, `<appName>` is the Dokploy service name (`pg-<slug>-<suffix>`, shown in the Dokploy dashboard and in `~/.dbm/state.json` under `projects.<slug>.dokploy.appName`). `--json` and `--yes` are global options and go before the subcommand.
+Conventions: `<slug>` is the project name, `<slug_db>` is the slug with `-` replaced by `_`, `<appName>` is the Dokploy service name (`pg-<slug>-<suffix>`, shown in the Dokploy dashboard and in `~/.dbm/state.json` under `projects.<slug>.dokploy.appName`). `--json` and `--yes` are global options and can go anywhere on the command line.
 
 ## Quick reference
 
@@ -17,7 +17,7 @@ Conventions: `<slug>` is the project name, `<slug_db>` is the slug with `-` repl
 | Tailscale node key expired | [Tailscale key expired](#tailscale-node-key-expired) |
 | `dbm init` stopped midway | [Resume init](#when-dbm-init-stops-midway) |
 
-RPO is 24 hours by default (one dump per night, 06:00-06:59 UTC, minute chosen per project).
+RPO is 24 hours by default (one dump per night, scheduled by Dokploy, whose cron runs in UTC: a minute between 06:00 and 06:24 UTC chosen per project, which is 03:00-03:24 in Buenos Aires). The host crons (`/etc/cron.d/dbm-*`) run in the host timezone instead (America/Argentina/Buenos_Aires unless `dbm init --timezone` said otherwise): the storage mirror at 06:30 and the PgBouncer certificate reload at 04:10 host-local time.
 
 ## Restore a dump in place
 
@@ -27,12 +27,13 @@ Use when a migration or a bug damaged data and you want yesterday's database bac
    ```bash
    dbm backup <slug>
    ```
-2. Restore. In-place restore overwrites the database, so it asks you to retype the slug (non-interactively: `--yes --confirm <slug>`):
+   Each line is `<ModTime>  <Name>`. The newest line is the safety copy you just took, i.e. the **damaged** data. Pick the Name of the last dump taken before the damage happened (for a bad migration at 14:00, the nightly dump from that morning), for example `2026-09-29T06-03-00-000Z.sql.gz`.
+2. Restore that specific dump by its Name. Do **not** use `latest` here: after step 1, `latest` is the damaged safety copy. In-place restore overwrites the database, so it asks you to retype the slug (non-interactively: `--yes --confirm <slug>`):
    ```bash
-   dbm restore <slug> <backup-id|latest>
-   dbm --yes restore <slug> latest --confirm <slug>      # non-interactive
+   dbm restore <slug> <Name-from-step-1>
+   dbm restore <slug> <Name-from-step-1> --yes --confirm <slug>      # non-interactive
    ```
-   It runs `rclone cat | gunzip | pg_restore -O --clean --if-exists` inside the project container as the app role. The dump is a gzipped custom-format archive despite the `.sql.gz` name.
+   It streams the dump (`rclone cat | gunzip`) into a scratch file inside the project container, removes the extension entries from its table of contents (the app role does not own the extensions, `dbm create` installed them as the superuser), and runs `pg_restore -O --clean --if-exists --no-comments -L <list>` as the app role. The dump is a gzipped custom-format archive despite the `.sql.gz` name.
 3. If `pg_restore` leaves objects behind (errors about objects that cannot be dropped), recreate the database and restore again:
    ```bash
    dbm psql <slug> --admin
@@ -41,9 +42,12 @@ Use when a migration or a bug damaged data and you want yesterday's database bac
    \c postgres
    DROP DATABASE <slug_db> WITH (FORCE);
    CREATE DATABASE <slug_db> OWNER <slug_db>_app;
+   \c <slug_db>
+   CREATE EXTENSION IF NOT EXISTS pgcrypto;
+   CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
    ```
-   then re-run step 2. The dump recreates extensions itself.
-4. Clone instead of overwrite when you only want to inspect old data: `dbm restore <slug> latest --as <staging-slug>`, then `dbm destroy <staging-slug>` when done.
+   (plus any extension listed under `projects.<slug>.postgres.extensions` in `~/.dbm/state.json`), then re-run step 2. The restore skips extension entries, so the extensions must exist before it runs.
+4. Clone instead of overwrite when you only want to inspect old data: `dbm restore <slug> <Name> --as <staging-slug>`, then `dbm destroy <staging-slug>` when done.
 
 ## Recover a destroyed project
 
@@ -53,30 +57,45 @@ Use when a migration or a bug damaged data and you want yesterday's database bac
 dbm restore <slug> latest --as <slug>
 ```
 
-This recreates the project (new Postgres container, new passwords, new S3 key) and loads the newest dump. Run `dbm env <slug>` and update Vercel, since the credentials changed. For storage, if the bucket was purged, run [the storage recovery](#recover-storage-objects) for `<slug>`.
+This recreates the project (new Postgres container, new passwords, new S3 key) and loads the newest dump of the destroyed project (the final backup `destroy` took). If the bucket was kept, the new project reuses it and its objects (a new key is granted on it; the bucket was made private by `destroy`, so run `dbm storage public <slug>` again if it was public). Run `dbm env <slug>` and update Vercel, since the credentials changed. For storage, if the bucket was purged, run [the storage recovery](#recover-storage-objects) for `<slug>`.
 
-If `destroy` failed halfway, the project is still in state and nothing was tombstoned: fix the cause named in the error and re-run `dbm destroy <slug>`. PgBouncer routing for it is already removed.
+If the restore fails after the project was recreated, fix the cause and re-run the same command: it restores into the recreated project from the destroyed project's dumps without creating anything again.
+
+Do **not** run `dbm create <slug>` before recovering: creating the slug again discards the tombstone, and from then on `dbm restore <slug> ...` uses the new project's dumps. (The old dumps stay in the dumps bucket under the old appName for 30 days; restoring them then means re-adding the tombstone by hand, as in [VPS lost](#vps-lost) step 4.)
+
+If `destroy` failed halfway, the project is still in state and nothing was tombstoned: fix the cause named in the error and re-run `dbm destroy <slug>`. Steps that already completed are reported as `already gone` and skipped; if the backup schedule was already removed, the final backup is skipped with a warning. PgBouncer routing for it is already removed.
 
 ## VPS lost
 
 A single-command `dbm recover` does not exist yet (future work). The documented path is manual. You need: your `~/.dbm` backup, the B2 buckets, and the DNS/Tailscale prerequisites from the README. Expect roughly an hour.
 
 1. Copy `~/.dbm/state.json` somewhere safe. Provision a new Ubuntu 24.04 VPS, point `db.`, `s3.` and `*.web.` DNS at its new IP, and generate a new Tailscale auth key (remove the old node from the Tailscale admin console first so the hostname is free).
-2. Run `dbm init <new-ip> --domain <domain>` with the same B2 buckets. This overwrites `~/.dbm/config.json` and creates a fresh Dokploy, PgBouncer and Garage.
-3. The old projects still appear in `state.json` with Dokploy ids that no longer exist, so `dbm restore` would refuse to create them. Convert each project into a tombstone by editing `state.json`: remove `projects.<slug>` and add, under a top-level `destroyed` object, an entry `"<slug>": { "slug": "<slug>", "appName": "<old appName>", "pgMajor": <17|18>, "extensions": [...], "memoryBytes": <n>, "destroyedAt": "<ISO timestamp>" }`, copying the values from the project entry you removed. `appName` must be the **old** value: the dumps live under it. Remove any entry created by the smoke test.
-4. For each project:
+2. Run `dbm init <new-ip> --domain <domain>` with the same B2 buckets. `init` records the host it bootstrapped in `~/.dbm/init-progress.json`; because the host differs it prints `host changed: starting init from scratch` and runs every step again. (If the new VPS reuses the old IP or hostname, delete `~/.dbm/init-progress.json` first, otherwise every step is skipped as done.) This overwrites `~/.dbm/config.json` and creates a fresh Dokploy, PgBouncer and Garage.
+3. **Right after init, disable the storage mirror** until storage is re-hydrated, so the nightly `rclone sync` of the new, empty Garage does not start deleting the off-site mirror (it deletes at most 50 objects per run, but none is the goal):
+   ```bash
+   ssh root@<host> mv /etc/cron.d/dbm-storage-sync /root/dbm-storage-sync.disabled
+   ```
+4. The old projects still appear in `state.json` with Dokploy ids that no longer exist, so `dbm restore` would refuse to create them. Convert each project into a tombstone by editing `state.json`: remove `projects.<slug>` and add, under a top-level `destroyed` object, an entry `"<slug>": { "slug": "<slug>", "appName": "<old appName>", "pgMajor": <17|18>, "extensions": [...], "memoryBytes": <n>, "destroyedAt": "<ISO timestamp>" }`, copying the values from the project entry you removed. `appName` must be the **old** value: the dumps live under it. Remove any entry created by the smoke test.
+5. For each project:
    ```bash
    dbm restore <slug> latest --as <slug>
    ```
-5. Re-hydrate storage with `scripts/recover-storage.sh` ([below](#recover-storage-objects)).
-6. `dbm env <slug>` for every project, update Vercel (passwords and S3 keys are new), redeploy, run `dbm doctor`.
+6. Re-hydrate storage with `scripts/recover-storage.sh` ([below](#recover-storage-objects)), then re-enable the mirror:
+   ```bash
+   ssh root@<host> mv /root/dbm-storage-sync.disabled /etc/cron.d/dbm-storage-sync
+   ```
+7. `dbm env <slug>` for every project, update Vercel (passwords and S3 keys are new), redeploy, run `dbm doctor`.
 
 Garage metadata does not need restoring in this scenario: buckets and keys are recreated by `create`, and the objects come back from the storage mirror.
 
 ## Recover storage objects
 
-The nightly mirror (`/etc/cron.d/dbm-storage-sync`) copies every Garage bucket the read-only `dbm-backup` key can see to `b2:<storage-bucket>/storage/<slug>/`, and Garage metadata snapshots to `garage-meta/`. To copy objects back into a freshly created bucket:
+The nightly mirror (`/etc/cron.d/dbm-storage-sync`) copies every Garage bucket the read-only `dbm-backup` key can see to `b2:<storage-bucket>/storage/<slug>/`, and Garage metadata snapshots to `garage-meta/`. It is an `rclone sync` capped at 50 deletions per run (`--max-delete 50`): objects missing from Garage are deleted from the mirror (B2 keeps deleted versions 30 days). To copy objects back into a freshly created bucket:
 
+0. Disable the mirror for the duration of the recovery, so a nightly run cannot delete mirror objects that are not back in Garage yet:
+   ```bash
+   ssh root@<host> mv /etc/cron.d/dbm-storage-sync /root/dbm-storage-sync.disabled
+   ```
 1. The `garage:` remote in `/etc/dokploy/dbm/rclone/rclone.conf` uses the read-only `dbm-backup` key. Grant it write on the bucket temporarily (Garage CLI syntax; check `--help` for your version):
    ```bash
    ssh root@<host> docker exec dbm-garage /garage bucket allow --read --write <slug> --key dbm-backup
@@ -90,6 +109,10 @@ The nightly mirror (`/etc/cron.d/dbm-storage-sync`) copies every Garage bucket t
    ```bash
    ssh root@<host> docker exec dbm-garage /garage bucket deny --write <slug> --key dbm-backup
    ```
+4. Re-enable the mirror once every bucket is back:
+   ```bash
+   ssh root@<host> mv /root/dbm-storage-sync.disabled /etc/cron.d/dbm-storage-sync
+   ```
 
 ## Garage metadata recovery
 
@@ -97,7 +120,7 @@ Symptom: `dbm-garage` crashes at start or `dbm doctor` reports Garage unhealthy,
 
 Follow Garage's "Replacement scenario 3: corrupted metadata" (https://garagehq.deuxfleurs.fr/documentation/operations/recovering/) and check the exact paths for your Garage version first. In outline:
 
-1. Stop the container: `docker stop dbm-garage` (it is a Dokploy compose service; if Dokploy restarts it, stop it from the dashboard instead).
+1. Disable the storage mirror (`mv /etc/cron.d/dbm-storage-sync /root/dbm-storage-sync.disabled`) so it cannot sync a half-recovered Garage over the off-site copy; re-enable it (`mv` back) after step 6. Then stop the container: `docker stop dbm-garage` (it is a Dokploy compose service; if Dokploy restarts it, stop it from the dashboard instead).
 2. Find the volume paths: `docker volume inspect dbm-garage-meta dbm-garage-snapshots`.
 3. Move the corrupted metadata database aside (do not delete it) and copy the newest snapshot from the snapshots volume into the metadata volume as Garage's doc describes. If the local snapshots are also bad, fetch `garage-meta/` from the storage bucket with rclone into the snapshots volume first.
 4. Start the container and check `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3903/health` on the VPS returns 200.
@@ -112,7 +135,7 @@ Follow Garage's "Replacement scenario 3: corrupted metadata" (https://garagehq.d
 
 ## Certificate renewal fails
 
-Traefik renews the `db.<domain>` certificate; `dbm-certs-dumper` republishes it into `/etc/dokploy/dbm/certs`; the 04:10 cron (`/etc/cron.d/dbm-pgbouncer-reload`) fixes ownership and reloads PgBouncer. `dbm doctor` warns below 14 days of validity. PgBouncer keeps serving the old certificate until it expires, and `verify-full` clients only fail after that.
+Traefik renews the `db.<domain>` certificate; `dbm-certs-dumper` republishes it into `/etc/dokploy/dbm/certs`; the 04:10 host-local cron (`/etc/cron.d/dbm-pgbouncer-reload`) fixes ownership and reloads PgBouncer. `dbm doctor` warns below 14 days of validity. PgBouncer keeps serving the old certificate until it expires, and `verify-full` clients only fail after that.
 
 1. `dbm doctor` to see the certificate state and whether the served certificate matches the dumped file.
 2. Check Traefik can still solve HTTP-01: DNS for `db.<domain>` must resolve to the VPS and port 80 must be reachable. Look at Traefik's logs in the Dokploy dashboard.
@@ -131,7 +154,7 @@ Then disable key expiry for the VPS in the Tailscale admin console so it does no
 
 ## When `dbm init` stops midway
 
-Progress is checkpointed after each step in `~/.dbm/init-progress.json`; the file holds the completed steps and the intermediate values (including secrets, which are cleared when init completes). Steps: harden, tailscale, dokploy, apikey, project, garage, pgbouncer, destination, config, smoke.
+Progress is checkpointed after each step in `~/.dbm/init-progress.json`; the file holds the target host, the completed steps and the intermediate values (including secrets, which are cleared when init completes; only the host is kept). Running `init` against a different host discards the file's progress and starts from scratch. Steps: harden, tailscale, dokploy, apikey, project, garage, pgbouncer, destination, config, smoke.
 
 - Re-run the exact same command: completed steps print `skip <name> (done)` and it resumes at the first incomplete one. Every step is idempotent.
 - Flags you do not pass again are prompted for if the step needs them.
@@ -163,8 +186,8 @@ A reload does not drop client connections. `dbm doctor` reports drift between th
 ## Reading Dokploy backup logs
 
 - Dokploy dashboard: open the project's Postgres service, Backups tab, for the schedule, last run and logs. `dbm backup <slug>` runs a manual backup and prints the resulting dump list.
-- Dumps land at `<appName>/db/<slug>/<timestamp>.sql.gz` in the dumps bucket. `dbm doctor` fails a project whose newest dump is older than 36 hours.
-- The cron runs in UTC; `dbm` schedules each project at `<minute> 6 * * *`.
+- Dumps land at `<appName>/db/<slug>/<timestamp>.sql.gz` in the dumps bucket. `dbm doctor` fails a project whose newest dump is older than 36 hours (projects created less than 36 hours ago are reported ok: no backup is expected yet).
+- Dokploy's cron runs in UTC; `dbm` schedules each project at `<minute> 6 * * *` with the minute in 0-24 chosen per slug (06:00-06:24 UTC, 03:00-03:24 in Buenos Aires).
 - If a destination test fails during `init` or a backup fails with a B2 error, the rclone error is shown by Dokploy; check the bucket name, region/endpoint (`https://s3.<region>.backblazeb2.com`) and that the application key covers the bucket with Read and Write. Dokploy's `additionalFlags` field can add rclone flags if needed.
 
 ## Upgrading component versions

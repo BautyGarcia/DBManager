@@ -4,7 +4,6 @@
 #   B2_ENDPOINT=... B2_REGION=... B2_KEY_ID=... B2_KEY_SECRET=... B2_DUMPS=... B2_STORAGE=... scripts/e2e.sh
 # Run before each tagged release. Needs: DNS db./s3./*.web. pointing at the host, an
 # operator machine on the same tailnet, and ssh access as root with your normal key.
-# Note: --json and --yes are global dbm options and go BEFORE the subcommand.
 set -euo pipefail
 : "${DBM_E2E_HOST:?}" "${DBM_E2E_DOMAIN:?}" "${TS_AUTHKEY:?}" "${B2_ENDPOINT:?}" "${B2_REGION:?}" "${B2_KEY_ID:?}" "${B2_KEY_SECRET:?}" "${B2_DUMPS:?}" "${B2_STORAGE:?}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -17,7 +16,7 @@ $DBM init "$DBM_E2E_HOST" --domain "$DBM_E2E_DOMAIN" --tailscale-auth-key "$TS_A
   --b2-dumps-bucket "$B2_DUMPS" --b2-storage-bucket "$B2_STORAGE"
 
 CREATE_JSON="$(mktemp)"             # holds credentials; removed below
-$DBM --json create e2e-app > "$CREATE_JSON"
+$DBM create e2e-app --json > "$CREATE_JSON"
 rm -f "$CREATE_JSON"
 $DBM list
 $DBM pause e2e-app && $DBM resume e2e-app
@@ -25,8 +24,8 @@ $DBM backup e2e-app
 $DBM restore e2e-app latest --as e2e-clone
 $DBM storage public e2e-app
 $DBM doctor
-$DBM --yes destroy e2e-clone --purge-storage --confirm e2e-clone
-$DBM --yes destroy e2e-app --purge-storage --confirm e2e-app
+$DBM destroy e2e-clone --purge-storage --yes --confirm e2e-clone
+$DBM destroy e2e-app --purge-storage --yes --confirm e2e-app
 
 echo "== Section 19 verifications (record results in docs/superpowers/research/e2e-<date>.md)"
 ssh root@"$DBM_E2E_HOST" 'docker volume ls --format {{.Name}} | grep -c -- -data || true'   # expect 0 leftover project volumes

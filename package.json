@@ -38,8 +38,7 @@
     "bin",
     "dist",
     "templates",
-    "skills",
-    "compose"
+    "skills"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",

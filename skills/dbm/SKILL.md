@@ -7,26 +7,42 @@ description: Provision a database + storage project on the operator's own VPS wi
 
 `dbm` (npm `db-manager`; run it as `dbm` if installed globally, otherwise `npx db-manager`) runs on the operator's machine and talks to their VPS. It prints the env vars a Next.js app needs. You never touch the VPS directly.
 
-`--json` and `--yes` are global options and must come BEFORE the subcommand: `dbm --json create <slug>`, not `dbm create <slug> --json`.
+`--json` and `--yes` are global options and can go anywhere on the command line, e.g. `dbm create <slug> --json`.
 
 ## Create a project and wire the app
 
-1. Pick a slug: lowercase, starts with a letter, letters/digits/hyphens, 2-31 chars. Usually the app's folder name.
+1. Pick a slug: 3-31 chars, lowercase letters, digits and single hyphens, starts with a letter, no leading/trailing hyphen (no `--` either). The `dbm-` prefix is reserved. Usually the app's folder name.
 2. Run and parse:
    ```bash
-   dbm --json create <slug>
+   dbm create <slug> --json
    ```
-   `create` is idempotent: if the slug already exists it changes nothing, exits 0 and returns the same JSON with `"existed": true`. (`dbm --json env <slug>` also reprints the env block without creating anything.) The JSON is `{ slug, existed, env: { DATABASE_URL, DATABASE_URL_SESSION, S3_ENDPOINT, S3_REGION, S3_BUCKET, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY, BETTER_AUTH_SECRET, BETTER_AUTH_URL, DATABASE_SSL_CA? } }`. `BETTER_AUTH_URL` is an empty string until you set it. Projects created with `--no-storage` have no `S3_*` keys.
+   `create` is idempotent: if the slug already exists it changes nothing, exits 0 and returns the same JSON with `"existed": true`. If it exits 1 saying the project is half-created (status `provisioning`), stop and tell the operator to run `dbm destroy <slug>` first. (`dbm env <slug> --json` also reprints the env block without creating anything.) The JSON is `{ slug, status, existed, env: { DATABASE_URL, DATABASE_URL_SESSION, S3_ENDPOINT, S3_REGION, S3_BUCKET, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY, BETTER_AUTH_SECRET, BETTER_AUTH_URL, DATABASE_SSL_CA? } }`. `BETTER_AUTH_URL` is an empty string until you set it. Projects created with `--no-storage` have no `S3_*` keys.
 3. Write every non-empty key to `.env.local` (create or merge; never commit it). Leave `BETTER_AUTH_URL` unset locally; the template falls back to `http://localhost:3000`.
-4. Push to Vercel, two calls per variable (production/preview default to sensitive; development cannot be combined):
+4. Push to Vercel, two calls per variable (production/preview default to sensitive; development cannot be combined). This needs `jq`. First load the values into the shell (they are `@sh`-quoted, so `eval` is safe; re-running `create` on the existing slug changes nothing):
    ```bash
-   for k in DATABASE_URL DATABASE_URL_SESSION S3_ENDPOINT S3_REGION S3_BUCKET S3_ACCESS_KEY_ID S3_SECRET_ACCESS_KEY BETTER_AUTH_SECRET; do
-     vercel env add "$k" production,preview --value "${!k}" --yes --force
-     vercel env add "$k" development       --value "${!k}" --yes --force
-   done
+   eval "$(dbm create <slug> --json | jq -r '.env | to_entries[] | "export \(.key)=\(.value|@sh)"')"
+   ```
+   Then, for each variable:
+   ```bash
+   vercel env add DATABASE_URL production,preview --value "$DATABASE_URL" --yes --force
+   vercel env add DATABASE_URL development --value "$DATABASE_URL" --yes --force
+   vercel env add DATABASE_URL_SESSION production,preview --value "$DATABASE_URL_SESSION" --yes --force
+   vercel env add DATABASE_URL_SESSION development --value "$DATABASE_URL_SESSION" --yes --force
+   vercel env add BETTER_AUTH_SECRET production,preview --value "$BETTER_AUTH_SECRET" --yes --force
+   vercel env add BETTER_AUTH_SECRET development --value "$BETTER_AUTH_SECRET" --yes --force
+   vercel env add S3_ENDPOINT production,preview --value "$S3_ENDPOINT" --yes --force
+   vercel env add S3_ENDPOINT development --value "$S3_ENDPOINT" --yes --force
+   vercel env add S3_REGION production,preview --value "$S3_REGION" --yes --force
+   vercel env add S3_REGION development --value "$S3_REGION" --yes --force
+   vercel env add S3_BUCKET production,preview --value "$S3_BUCKET" --yes --force
+   vercel env add S3_BUCKET development --value "$S3_BUCKET" --yes --force
+   vercel env add S3_ACCESS_KEY_ID production,preview --value "$S3_ACCESS_KEY_ID" --yes --force
+   vercel env add S3_ACCESS_KEY_ID development --value "$S3_ACCESS_KEY_ID" --yes --force
+   vercel env add S3_SECRET_ACCESS_KEY production,preview --value "$S3_SECRET_ACCESS_KEY" --yes --force
+   vercel env add S3_SECRET_ACCESS_KEY development --value "$S3_SECRET_ACCESS_KEY" --yes --force
    vercel env add BETTER_AUTH_URL production --value "https://<production-domain>" --yes --force
    ```
-   Do not set `BETTER_AUTH_URL` for preview; the template falls back to `VERCEL_URL`. Skip the `S3_*` names for `--no-storage` projects. If the JSON has `DATABASE_SSL_CA`, push it the same way.
+   Do not set `BETTER_AUTH_URL` for preview; the template falls back to `VERCEL_URL`. Skip the `S3_*` lines for `--no-storage` projects. If the JSON has `DATABASE_SSL_CA` or `S3_PUBLIC_BASE_URL`, push them with the same two lines.
 5. Pin functions to São Paulo: add `templates/nextjs/vercel.json` (`"regions": ["gru1"]`). If the project already has `vercel.ts`, add `regions: ['gru1']` there instead; never keep both files.
 6. Copy the templates from the dbm repo `templates/nextjs/` (shipped inside the npm package) into the project (`lib/db.ts`, `lib/schema.ts`, `drizzle.config.ts`, `lib/auth.ts`, `lib/auth-client.ts`, `app/api/auth/[...all]/route.ts`, `lib/s3.ts`, `.env.example`). Keep them verbatim except for `lib/schema.ts`, where the app's tables go.
 7. Install pinned dependencies:

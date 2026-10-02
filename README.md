@@ -32,6 +32,7 @@ Supabase free tiers are one project per account. Consolidating on a paid Supabas
   - Dumps bucket: lifecycle rule `daysFromUploadingToHiding = 30`, `daysFromHidingToDeleting = 1`, whole bucket. Not "Keep only the last version".
   - Storage mirror bucket: **no** upload-to-hiding rule, only `daysFromHidingToDeleting = 30` (deleted or overwritten objects stay recoverable for 30 days).
 - **Operator machine**: macOS or Linux, Node >= 22.12.0, an OpenSSH client, and the [Vercel CLI](https://vercel.com/docs/cli).
+  - If your SSH agent holds more than 5 keys, add a `Host` entry for the VPS in `~/.ssh/config` with `IdentitiesOnly yes` and `IdentityFile <your key>`: sshd allows 6 authentication attempts per connection, and fail2ban bans the address after repeated failures.
 - Enable 2FA on the Dokploy account after the first login.
 
 ## Install
@@ -50,7 +51,7 @@ dbm create myapp                          # prints the env block
 
 Paste the printed variables into `.env.local` and into Vercel (`vercel env add NAME production,preview --value "$V" --yes --force`, then once more for `development`). Set `BETTER_AUTH_URL` to the production URL for production only. Pin functions to São Paulo by copying `templates/nextjs/vercel.json` (`"regions": ["gru1"]`). The `skills/dbm/SKILL.md` skill automates these steps for an AI agent, and `templates/nextjs/` holds the Drizzle, better-auth and S3 files for the app.
 
-`--json` and `--yes` are global options and go before the subcommand: `dbm --json list`, `dbm --yes destroy myapp --confirm myapp`.
+`--json` and `--yes` are global options and can go anywhere on the command line: `dbm list --json`, `dbm destroy myapp --yes --confirm myapp`.
 
 `dbm init` is checkpointed in `~/.dbm/init-progress.json`; re-running resumes. Its steps are harden, tailscale, dokploy, apikey, project, garage, pgbouncer, destination, config, smoke. When it finishes it prints two checks the host cannot run itself: `nc -zv <ip> 3000` from outside the tailnet must fail, and `nc -zv db.<domain> 6432` must succeed.
 
@@ -59,11 +60,11 @@ Paste the printed variables into `.env.local` and into Vercel (`vercel env add N
 | Command | What it does |
 |---|---|
 | `dbm init <ssh-host> --domain <domain>` | Bootstrap a fresh VPS (hardening, Tailscale, Dokploy, Garage, PgBouncer, backups, smoke test). Options: `--user`, `--tls letsencrypt\|self-ca`, `--hostname`, `--timezone`, `--tailscale-auth-key`, `--dokploy-api-key`, `--b2-endpoint`, `--b2-region`, `--b2-key-id`, `--b2-key-secret`, `--b2-dumps-bucket`, `--b2-storage-bucket` |
-| `dbm create <slug>` | Postgres container, PgBouncer entries, S3 bucket, nightly backup. Options: `--memory 512m`, `--pg 17\|18`, `--extensions a,b`, `--no-storage`, `--cors-origin <origin...>`. Idempotent for an existing slug |
+| `dbm create <slug>` | Postgres container, PgBouncer entries, S3 bucket, nightly backup. Options: `--memory 512m`, `--pg 17\|18`, `--extensions a,b`, `--no-storage`, `--cors-origin <origin...>`. Slugs are 3-31 chars of lowercase letters, digits and single hyphens, start with a letter, no leading/trailing hyphen; the `dbm-` prefix is reserved. Idempotent for an existing slug; a half-created (`provisioning`) project is refused until you `dbm destroy` it |
 | `dbm list` | Projects with status, memory, disk, storage and last backup |
 | `dbm env <slug>` | Reprint the env block (never includes the superuser password) |
 | `dbm pause <slug>` / `dbm resume <slug>` | Stop or start the Postgres container and its backup schedule |
-| `dbm destroy <slug>` | Final backup, then remove everything; `--purge-storage` also deletes the bucket; `--confirm <slug>` is required with `--yes` |
+| `dbm destroy <slug>` | Final backup, then remove everything; `--purge-storage` also deletes the bucket (a kept bucket is made private); `--confirm <slug>` is required with `--yes`. A failed destroy can be re-run: steps already done are reported as already gone |
 | `dbm backup <slug>` | On-demand off-site backup, then list dumps |
 | `dbm restore <slug> <backup-id\|latest>` | Restore a dump. `--as <newslug>` restores into a new project (clone workflow, or recreate a destroyed project with `--as <slug>`). In-place restore asks for confirmation (`--yes --confirm <slug>` non-interactively) |
 | `dbm psql <slug>` | Interactive psql in the container; `--admin` for the superuser |
@@ -82,8 +83,9 @@ Environment variables printed by `dbm env`: `DATABASE_URL` (transaction pooling,
 - `/etc/dokploy/dbm/certs/` the `db.<domain>` certificate copied out of Traefik for PgBouncer.
 - `/etc/dokploy/dbm/rclone/rclone.conf` rclone remotes (`garage:` read-only key, `b2:` storage bucket) used by the storage mirror.
 - `/etc/dokploy/traefik/dynamic/dbm-*.yml` Traefik file-provider routes: `dbm-s3.yml`, `dbm-db-cert.yml`, `dbm-web-<slug>.yml`.
-- `/etc/cron.d/dbm-storage-sync` nightly (06:30 UTC) mirror of Garage buckets and metadata snapshots to the storage bucket, run by a throwaway `rclone/rclone:1` container.
-- `/etc/cron.d/dbm-pgbouncer-reload` daily (04:10) certificate ownership fix and PgBouncer SIGHUP.
+- `/etc/cron.d/dbm-storage-sync` nightly (06:30 host-local time, America/Argentina/Buenos_Aires by default, `--timezone` at init) mirror of Garage buckets and metadata snapshots to the storage bucket, run by a throwaway `rclone/rclone:1` container. The sync deletes at most 50 objects per run (`--max-delete 50`), so a wiped Garage cannot empty the mirror in one night.
+- `/etc/cron.d/dbm-pgbouncer-reload` daily (04:10 host-local time) certificate ownership fix and PgBouncer SIGHUP.
+- Nightly dumps are scheduled by Dokploy, whose cron runs in UTC: each project at a minute between 06:00 and 06:24 UTC (03:00-03:24 in Buenos Aires), chosen per slug.
 - Containers: `dbm-pgbouncer`, `dbm-certs-dumper`, `dbm-garage`, and one `pg-<slug>-<suffix>` per project.
 
 ## Local files
@@ -121,7 +123,7 @@ Releases use [release-please](https://github.com/googleapis/release-please-actio
 
 ## Status
 
-The code is complete and covered by unit tests and an integration suite (real `postgres:18`, PgBouncer 1.26.0 and Garage 2.4.1 in Docker). **It has not been run against a real VPS.** The integration suite verified two of the design's open assumptions: `drizzle-kit push` works through the `_session` PgBouncer alias, and Garage `corsRules` use the S3 field names (`allowedOrigins`, `allowedMethods`, ...) on the wire (checked against 2.4.1).
+The code is complete and covered by unit tests and an integration suite (real `postgres:18`, PgBouncer 1.26.0 and Garage 2.4.1 in Docker). **It has not been run against a real VPS.** The integration suite verified two of the design's open assumptions: `drizzle-kit push` works through the `_session` PgBouncer alias, and Garage admin API v2 `corsRules` use the singular PascalCase field names on the wire (`AllowedOrigin`, `AllowedMethod`, `AllowedHeader`, `ExposeHeader`, `MaxAgeSeconds`; checked against 2.4.1, mapped in `toGarageCorsRule`).
 
 Hand-off checklist before relying on it:
 

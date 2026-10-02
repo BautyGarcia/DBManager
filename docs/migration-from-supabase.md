@@ -35,9 +35,9 @@ dbm import <slug> \
   --storage-bucket <bucket>
 ```
 
-`--schemas` defaults to `public`; pass a comma-separated list for other user-owned schemas. The storage flags are optional and sync one bucket at a time into the project's bucket (rerun for more buckets; the target bucket is the project's own, so use key prefixes if you merge several).
+`--schemas` defaults to `public`; pass a comma-separated list for other user-owned schemas. The storage flags are optional and copy one bucket at a time into the project's bucket (rerun for more buckets; the target bucket is the project's own, so use key prefixes if you merge several).
 
-What it does, in order: `pg_dump --schema-only --no-owner --no-privileges --no-comments --no-publications --no-subscriptions`, then `pg_dump --data-only --no-owner --no-privileges`; restores the schema with `psql -v ON_ERROR_STOP=0` as the app role, then the data with `SET session_replication_role = replica` so foreign-key and trigger order does not matter; collects stderr from both; syncs storage with `rclone sync --size-only` (Supabase S3 does not support Content-MD5 or ETag checksums).
+What it does, in order: `pg_dump --schema-only --no-owner --no-privileges --no-comments --no-publications --no-subscriptions`, then `pg_dump --data-only --no-owner --no-privileges`; restores the schema with `psql -v ON_ERROR_STOP=0` as the app role, then the data with `SET session_replication_role = replica` so foreign-key and trigger order does not matter; collects stderr from both; copies storage with `rclone copy --size-only` (Supabase S3 does not support Content-MD5 or ETag checksums). It is a copy, not a sync: objects already in the project's bucket are never deleted, so re-running an import or merging several source buckets is safe.
 
 ### Reading the report
 
@@ -93,7 +93,7 @@ supabase db dump --db-url "$SRC" -f data.sql --data-only --use-copy \
 Storage by hand (Supabase to Garage):
 
 ```bash
-rclone sync \
+rclone copy \
   ":s3,provider=Other,endpoint=https://<REF>.storage.supabase.co/storage/v1/s3,region=<project_region>,force_path_style=true,access_key_id=$SB_KEY,secret_access_key=$SB_SECRET:<bucket>" \
   ":s3,provider=Other,endpoint=https://s3.<domain>,region=garage,force_path_style=true,access_key_id=$S3_ACCESS_KEY_ID,secret_access_key=$S3_SECRET_ACCESS_KEY:<slug>" \
   --checksum=false --size-only

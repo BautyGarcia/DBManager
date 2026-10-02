@@ -16,7 +16,7 @@ None of this has been exercised on a real VPS yet; controls marked "verified in 
 | Garage web endpoint (public per bucket) | Only for buckets explicitly made public; no directory listing. |
 | Postgres :5432 | Not published. Reachable only on the Docker overlay network. |
 | Dokploy dashboard and API :3000 | Dropped in `DOCKER-USER` for internet-originated traffic; reachable on the tailnet only (`tailscale serve` HTTPS). 2FA enabled on the account. The API key is organization-wide: stored 0600, never in argv, never in the repo. |
-| SSH :22 (public) | Key-only, `PermitRootLogin prohibit-password`, `MaxAuthTries 4`, `fail2ban` (1 hour ban, incremental). Kept public rather than tailnet-only to avoid lockout if Tailscale fails. |
+| SSH :22 (public) | Key-only, `PermitRootLogin prohibit-password`, sshd's default `MaxAuthTries` (6; use `IdentitiesOnly yes` if your agent holds many keys), `fail2ban` (1 hour ban, incremental). Kept public rather than tailnet-only to avoid lockout if Tailscale fails. |
 | OS | Ubuntu 24.04, `unattended-upgrades` security-only with a 04:30 reboot window, ufw default deny, Docker log rotation. |
 | Secrets at rest (VPS) | The Dokploy database holds service env; PgBouncer `userlist.txt` holds SCRAM verifiers, not plaintext; the Garage master token only lives in the compose env; Traefik dynamic files contain no secrets. |
 | Secrets at rest (laptop) | `~/.dbm/` is 0700/0600, the same model as `~/.aws/credentials`. State is not encrypted so that agents can use it. |
