@@ -59,4 +59,24 @@ describe('GarageAdmin', () => {
     expect(inputs[2]).toContain('/v2/DeleteBucket?id=b1');
     expect(inputs[3]).toContain('/v2/DeleteKey?id=GK');
   });
+  it('updateBucket sends corsRules with the S3 XML field names Garage v2 expects', async () => {
+    const f = makeFakeRunner([{ match: /curl/, stdout: '{}' }]);
+    const g = makeGarageAdmin(f.runner, { port: 3903, token: 'T' });
+    await g.updateBucket('b1', {
+      corsRules: [
+        {
+          allowedOrigins: ['*'],
+          allowedMethods: ['GET', 'PUT'],
+          allowedHeaders: ['*'],
+          exposeHeaders: ['ETag'],
+          maxAgeSeconds: 3600,
+        },
+      ],
+    });
+    const input = f.calls[0]?.input ?? '';
+    expect(input).toContain(
+      '\\"corsRules\\":[{\\"AllowedOrigin\\":[\\"*\\"],\\"AllowedMethod\\":[\\"GET\\",\\"PUT\\"],\\"AllowedHeader\\":[\\"*\\"],\\"ExposeHeader\\":[\\"ETag\\"],\\"MaxAgeSeconds\\":3600}]',
+    );
+    expect(input).not.toContain('allowedOrigins');
+  });
 });

@@ -38,6 +38,10 @@ export interface GaragePermissions {
   write?: boolean;
   owner?: boolean;
 }
+/**
+ * Domain shape. On the wire Garage admin v2 (verified against v2.4.1) uses the S3 XML names:
+ * AllowedOrigin, AllowedMethod, AllowedHeader, ExposeHeader, MaxAgeSeconds; see toGarageCorsRule.
+ */
 export interface GarageCorsRule {
   allowedOrigins: string[];
   allowedMethods: string[];

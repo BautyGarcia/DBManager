@@ -1,6 +1,12 @@
 import { z } from 'zod';
 import { DbmError, remoteError } from '../core/exit.js';
-import type { GarageAdmin, GarageBucketInfo, GaragePermissions, SshRunner } from './types.js';
+import type {
+  GarageAdmin,
+  GarageBucketInfo,
+  GarageCorsRule,
+  GaragePermissions,
+  SshRunner,
+} from './types.js';
 
 export interface GarageAdminOptions {
   port: number;
@@ -54,6 +60,17 @@ export function curlConfig(i: CurlConfigInput): string {
     lines.push(`data = "${esc(JSON.stringify(i.body))}"`);
   }
   return `${lines.join('\n')}\n`;
+}
+
+/** Garage's cors.Rule reuses the S3 XML field names (singular, PascalCase); camelCase is rejected. */
+export function toGarageCorsRule(r: GarageCorsRule): Record<string, unknown> {
+  return {
+    AllowedOrigin: r.allowedOrigins,
+    AllowedMethod: r.allowedMethods,
+    AllowedHeader: r.allowedHeaders,
+    ExposeHeader: r.exposeHeaders,
+    MaxAgeSeconds: r.maxAgeSeconds,
+  };
 }
 
 const BucketInfo = z.looseObject({
@@ -147,7 +164,9 @@ export function makeGarageAdmin(runner: SshRunner, o: GarageAdminOptions): Garag
     allowBucketKey: (b, k, p) => perms('AllowBucketKey', b, k, p),
     denyBucketKey: (b, k, p) => perms('DenyBucketKey', b, k, p),
     async updateBucket(bucketId, patch) {
-      await call('UpdateBucket', { query: { id: bucketId }, body: patch });
+      const { corsRules, ...rest } = patch;
+      const body = corsRules ? { ...rest, corsRules: corsRules.map(toGarageCorsRule) } : rest;
+      await call('UpdateBucket', { query: { id: bucketId }, body });
     },
     async addBucketAlias(bucketId, globalAlias) {
       await call('AddBucketAlias', { body: { bucketId, globalAlias } });
