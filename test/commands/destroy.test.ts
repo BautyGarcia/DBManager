@@ -37,12 +37,17 @@ describe('destroy', () => {
     expect(t.garage.calls).toEqual(['deleteKey']);
     expect(t.garage.buckets.has('b1')).toBe(true);
     expect(t.store.state.projects['my-app']).toBeUndefined();
+    expect(t.store.saves).toBe(1);
     expect(t.errLines.join('')).toMatch(/bucket my-app kept/);
   });
   it('--purge-storage empties then deletes the bucket and removes the web router', async () => {
     const t = seeded();
-    t.store.state.projects['my-app']!.storage!.publicBaseUrl = 'https://my-app.web.example.com';
-    t.garage.buckets.get('b1')!.objects = 0; // emptyBucket is simulated by the runner; the fake bucket must be empty for deleteBucket
+    const storage = t.store.state.projects['my-app']?.storage;
+    if (!storage) throw new Error('seed missing storage');
+    storage.publicBaseUrl = 'https://my-app.web.example.com';
+    const bucket = t.garage.buckets.get('b1');
+    if (!bucket) throw new Error('seed missing bucket');
+    bucket.objects = 0; // emptyBucket is simulated by the runner; the fake bucket must be empty for deleteBucket
     await destroyCommand(t.deps, {
       slug: 'my-app',
       purgeStorage: true,
@@ -70,6 +75,56 @@ describe('destroy', () => {
     expect(t.dokploy.calls[0]).toBe('removeBackup');
     expect(r.warnings.join(' ')).toMatch(/paused.*no final backup/);
   });
+  it('stops PgBouncer routing before removing the service and saves state once at the end', async () => {
+    const t = seeded();
+    let uploadsAtRemove = -1;
+    let savesAtRemove = -1;
+    const orig = t.dokploy.removePostgres.bind(t.dokploy);
+    t.dokploy.removePostgres = async (id: string) => {
+      uploadsAtRemove = t.runner.uploads.length;
+      savesAtRemove = t.store.saves;
+      await orig(id);
+    };
+    await destroyCommand(t.deps, {
+      slug: 'my-app',
+      purgeStorage: false,
+      yes: true,
+      confirmSlug: 'my-app',
+    });
+    expect(uploadsAtRemove).toBe(2);
+    expect(savesAtRemove).toBe(0);
+    expect(t.store.saves).toBe(1);
+  });
+  it('removePostgres failure: exit 2, project stays in state, message lists completed and remaining steps', async () => {
+    const t = seeded();
+    t.dokploy.failAt.add('removePostgres');
+    const err = await destroyCommand(t.deps, {
+      slug: 'my-app',
+      purgeStorage: false,
+      yes: true,
+      confirmSlug: 'my-app',
+    }).catch((e) => e);
+    expect(err).toMatchObject({ exitCode: 2 });
+    expect(err.message).toMatch(/completed: backup schedule/);
+    expect(err.message).toMatch(/not attempted: .*volume pg-my-app-abc123-data/);
+    expect(err.message).toMatch(/still in dbm state/);
+    expect(t.store.state.projects['my-app']).toBeDefined();
+    expect(t.store.saves).toBe(0);
+  });
+  it('deleteBucket failure under --purge-storage: exit 2, project stays, key not deleted', async () => {
+    const t = seeded();
+    t.garage.failAt.add('deleteBucket');
+    const err = await destroyCommand(t.deps, {
+      slug: 'my-app',
+      purgeStorage: true,
+      yes: true,
+      confirmSlug: 'my-app',
+    }).catch((e) => e);
+    expect(err).toMatchObject({ exitCode: 2 });
+    expect(err.message).toMatch(/not attempted: key GK1/);
+    expect(t.garage.calls).not.toContain('deleteKey');
+    expect(t.store.state.projects['my-app']).toBeDefined();
+  });
   it('requires confirmation: wrong --confirm or declined prompt is a user error with no side effects', async () => {
     const t = seeded();
     await expect(
@@ -79,11 +134,14 @@ describe('destroy', () => {
         yes: true,
         confirmSlug: 'other',
       }),
-    ).rejects.toMatchObject({ exitCode: 1 });
+    ).rejects.toThrow(/--confirm/);
     t.deps.confirm = async () => false;
     await expect(
       destroyCommand(t.deps, { slug: 'my-app', purgeStorage: false, yes: false }),
-    ).rejects.toMatchObject({ exitCode: 1 });
+    ).rejects.toThrow(/aborted/);
     expect(t.dokploy.calls).toEqual([]);
+    expect(t.runner.calls).toEqual([]);
+    expect(t.garage.calls).toEqual([]);
+    expect(t.store.saves).toBe(0);
   });
 });

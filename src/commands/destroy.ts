@@ -1,5 +1,5 @@
 import { IMAGES } from '../core/compose.js';
-import { userError } from '../core/exit.js';
+import { DbmError, ExitCode, userError } from '../core/exit.js';
 import { deriveNames } from '../core/naming.js';
 import { getProject, type Project, removeProject } from '../core/state.js';
 import type { Deps } from './context.js';
@@ -56,7 +56,7 @@ export async function emptyBucket(deps: Deps, p: Project): Promise<void> {
 }
 
 export async function destroyCommand(deps: Deps, o: DestroyOptions): Promise<DestroyResult> {
-  let state = await deps.store.loadState();
+  const state = await deps.store.loadState();
   const p = getProject(state, o.slug);
   await requireConfirmation(deps, o, 'permanently destroy');
   const names = deriveNames(p.slug);
@@ -69,34 +69,72 @@ export async function destroyCommand(deps: Deps, o: DestroyOptions): Promise<Des
     await deps.dokploy.manualBackup(p.dokploy.backupId);
   }
 
-  state = removeProject(state, p.slug);
-  await deps.store.saveState(state);
-  await applyPgbouncer(deps, state);
+  const remaining = removeProject(state, p.slug);
+  // Stop routing traffic first; state is saved only once every resource is gone.
+  await applyPgbouncer(deps, remaining);
 
-  if (p.dokploy.backupId) await deps.dokploy.removeBackup(p.dokploy.backupId);
-  await deps.dokploy.removePostgres(p.dokploy.postgresId);
-  await removeVolume(deps, p.dokploy.appName);
+  const steps: { label: string; run: () => Promise<void> }[] = [];
+  if (p.dokploy.backupId) {
+    const id = p.dokploy.backupId;
+    steps.push({ label: 'backup schedule', run: () => deps.dokploy.removeBackup(id) });
+  }
+  steps.push({
+    label: 'postgres service',
+    run: () => deps.dokploy.removePostgres(p.dokploy.postgresId),
+  });
+  steps.push({
+    label: `volume ${p.dokploy.appName}-data`,
+    run: () => removeVolume(deps, p.dokploy.appName),
+  });
 
   let purgedStorage = false;
-  if (p.storage) {
+  const st = p.storage;
+  if (st) {
     if (o.purgeStorage) {
-      deps.io.err('emptying and deleting bucket...\n');
-      await emptyBucket(deps, p);
-      await deps.garage.cleanupIncompleteUploads(p.storage.bucketId);
-      await deps.garage.deleteBucket(p.storage.bucketId);
-      if (p.storage.publicBaseUrl) {
-        await deps.ssh.run([
-          'rm',
-          '-f',
-          `${deps.cfg.remote.traefikDynamicDir}/${names.traefikWebFile}`,
-        ]);
+      steps.push({
+        label: `bucket ${st.bucket}`,
+        run: async () => {
+          deps.io.err('emptying and deleting bucket...\n');
+          await emptyBucket(deps, p);
+          await deps.garage.cleanupIncompleteUploads(st.bucketId);
+          await deps.garage.deleteBucket(st.bucketId);
+        },
+      });
+      if (st.publicBaseUrl) {
+        steps.push({
+          label: 'web router',
+          run: () =>
+            deps.ssh
+              .run(['rm', '-f', `${deps.cfg.remote.traefikDynamicDir}/${names.traefikWebFile}`])
+              .then(() => undefined),
+        });
       }
       purgedStorage = true;
     } else {
-      deps.io.err(`bucket ${p.storage.bucket} kept (use --purge-storage to delete it)\n`);
+      deps.io.err(`bucket ${st.bucket} kept (use --purge-storage to delete it)\n`);
     }
-    await deps.garage.deleteKey(p.storage.keyId);
+    steps.push({ label: `key ${st.keyId}`, run: () => deps.garage.deleteKey(st.keyId) });
   }
+
+  const done: string[] = [];
+  for (const [i, step] of steps.entries()) {
+    try {
+      await step.run();
+      done.push(step.label);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      const notAttempted = steps.slice(i + 1).map((x) => x.label);
+      throw new DbmError(
+        `destroy of ${p.slug} failed at ${step.label}: ${msg}. ` +
+          `completed: ${done.join(', ') || 'none'}. not attempted: ${notAttempted.join(', ') || 'none'}. ` +
+          `PgBouncer routing for ${p.slug} was already removed and stays removed. ` +
+          `${p.slug} is still in dbm state; fix the cause and re-run \`dbm destroy ${p.slug}\``,
+        ExitCode.RemoteFailure,
+        e instanceof DbmError && e.step ? e.step : 'destroy',
+      );
+    }
+  }
+  await deps.store.saveState(remaining);
 
   for (const w of warnings) deps.io.err(`warning: ${w}\n`);
   deps.io.err(`destroyed ${p.slug}; off-site dumps remain for 30 days\n`);
