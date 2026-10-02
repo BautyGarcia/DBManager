@@ -1,4 +1,9 @@
+import { existsSync } from "node:fs";
 import { defineConfig } from "drizzle-kit";
+
+// drizzle-kit runs outside Next.js and does not load .env.local by itself; Node 22 can.
+// On Vercel there is no .env.local (env vars are injected), so this is a no-op there.
+if (existsSync(".env.local")) process.loadEnvFile(".env.local");
 
 // Migrations use the session-mode alias (DATABASE_URL_SESSION) only; the app uses DATABASE_URL
 // (transaction mode), which drizzle-kit must never use.

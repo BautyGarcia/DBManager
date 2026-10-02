@@ -38,6 +38,11 @@ describe('templates/nextjs', () => {
     expect(s).toContain('process.env.DATABASE_SSL_CA.replace(/\\\\n/g, "\\n")');
     expect(s).toMatch(/dbCredentials: \{[\s\S]*ssl,\n/);
   });
+  it('drizzle.config loads .env.local itself so drizzle-kit needs no shell env tricks', () => {
+    const s = readFileSync('templates/nextjs/drizzle.config.ts', 'utf8');
+    expect(s).toContain('process.loadEnvFile(".env.local")');
+    expect(s).toContain('existsSync(".env.local")');
+  });
   it('vercel.json pins gru1', () => {
     expect(JSON.parse(readFileSync('templates/nextjs/vercel.json', 'utf8'))).toEqual({
       $schema: 'https://openapi.vercel.sh/vercel.json',
