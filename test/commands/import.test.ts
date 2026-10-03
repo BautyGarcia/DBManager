@@ -91,6 +91,9 @@ describe('importScript options', () => {
       "tablename not in ('user','session','account','verification','rateLimit','__drizzle_migrations')",
     );
     for (const p of PROTECTED_TABLES) expect(s).toContain(`'${p}'`);
+    expect(s).toContain("format('(%L,%L)', schemaname, tablename)");
+    expect(s).toContain('(schemaname, tablename) in (values $SRC_ROWS)');
+    expect(s.match(/tablename not in \('user'/g)).toHaveLength(2);
     expect(s).toContain('TRUNCATE TABLE $REPLACE_TABLES RESTART IDENTITY"');
     expect(s).not.toContain('CASCADE');
     expect(s).toContain("echo '---REPLACE-FAILED---'; exit 1");

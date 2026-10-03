@@ -88,15 +88,19 @@ psql "$DST" -v ON_ERROR_STOP=0 -q -f /tmp/schema.sql 2>&1 >/dev/null | grep -E '
 echo '---POLICIES---'
 grep -E '^CREATE POLICY' /tmp/schema.sql | sed -E 's/^CREATE POLICY ("?[^" ]+"?) ON ([^ ]+).*/\\2: \\1/' || true
 `;
-  // Replace set is computed on the target in SQL: protected names are excluded in every schema
-  // (psql %I quoting makes shell pattern matching on "user"/"rateLimit" unreliable). One TRUNCATE
-  // without CASCADE: if a protected table references an imported one, Postgres refuses the whole
+  // Replace set = tables in the source AND the target, minus protected names in every schema.
+  // The source list is built as quote_literal row values (%L), so no table name is ever
+  // interpolated unescaped; target-only tables are never truncated. One TRUNCATE without
+  // CASCADE: if a protected table references an imported one, Postgres refuses the whole
   // statement and we abort before any data is loaded.
   const replacePhase = o.replace
     ? `echo '---REPLACE---'
-REPLACE_TABLES=$(psql "$DST" -Atc "select string_agg(format('%I.%I', schemaname, tablename), ', ' order by schemaname, tablename) from pg_tables where schemaname in (${schemaIn}) and tablename not in (${protectedIn})") || { echo '---REPLACE-FAILED---'; exit 1; }
-if [ -n "$REPLACE_TABLES" ]; then
-  psql "$DST" -v ON_ERROR_STOP=1 -qc "TRUNCATE TABLE $REPLACE_TABLES RESTART IDENTITY" 2>&1 || { echo '---REPLACE-FAILED---'; exit 1; }
+SRC_ROWS=$(psql "$SRC" -Atc "select string_agg(format('(%L,%L)', schemaname, tablename), ',') from pg_tables where schemaname in (${schemaIn}) and tablename not in (${protectedIn})") || { echo '---REPLACE-FAILED---'; exit 1; }
+if [ -n "$SRC_ROWS" ]; then
+  REPLACE_TABLES=$(psql "$DST" -Atc "select string_agg(format('%I.%I', schemaname, tablename), ', ' order by schemaname, tablename) from pg_tables where (schemaname, tablename) in (values $SRC_ROWS) and tablename not in (${protectedIn})") || { echo '---REPLACE-FAILED---'; exit 1; }
+  if [ -n "$REPLACE_TABLES" ]; then
+    psql "$DST" -v ON_ERROR_STOP=1 -qc "TRUNCATE TABLE $REPLACE_TABLES RESTART IDENTITY" 2>&1 || { echo '---REPLACE-FAILED---'; exit 1; }
+  fi
 fi
 `
     : '';
