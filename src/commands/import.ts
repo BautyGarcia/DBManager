@@ -58,20 +58,108 @@ function checkSchemas(schemas: string[]): void {
   }
 }
 
-export function importScript(o: { src: string; dst: string; schemas: string[] }): string {
+export const PROTECTED_TABLES = [
+  'user',
+  'session',
+  'account',
+  'verification',
+  'rateLimit',
+  '__drizzle_migrations',
+] as const;
+
+export interface ImportScriptOptions {
+  src: string;
+  dst: string;
+  schemas: string[];
+  dataOnly?: boolean;
+  replace?: boolean;
+}
+
+export function importScript(o: ImportScriptOptions): string {
   checkSchemas(o.schemas);
   const schemaFlags = o.schemas.map((s) => quote(`--schema=${s}`)).join(' ');
+  const schemaIn = o.schemas.map((s) => `'${s}'`).join(','); // names validated by SCHEMA_RE
+  const protectedCase = PROTECTED_TABLES.map((t) => `public.${t}`).join('|');
+  const schemaPhase = o.dataOnly
+    ? ''
+    : `pg_dump "$SRC" --schema-only --no-owner --no-privileges --no-comments --no-publications --no-subscriptions ${schemaFlags} -f /tmp/schema.sql || { echo '---DUMP-FAILED---'; exit 1; }
+echo '---SCHEMA-ERRORS---'
+psql "$DST" -v ON_ERROR_STOP=0 -q -f /tmp/schema.sql 2>&1 >/dev/null | grep -E 'ERROR|FATAL' || true
+echo '---POLICIES---'
+grep -E '^CREATE POLICY' /tmp/schema.sql | sed -E 's/^CREATE POLICY ("?[^" ]+"?) ON ([^ ]+).*/\\2: \\1/' || true
+`;
+  const replacePhase = o.replace
+    ? `echo '---REPLACE---'
+for t in $TABLES; do
+  case "$t" in ${protectedCase}) continue;; esac
+  if psql "$DST" -Atc "select to_regclass('$t') is not null" | grep -q t; then
+    psql "$DST" -qc "TRUNCATE TABLE $t RESTART IDENTITY CASCADE" 2>&1 | grep -E 'ERROR' || true
+  fi
+done
+`
+    : '';
   return `set -u
 SRC='${o.src.replaceAll("'", "'\\''")}'
 DST='${o.dst.replaceAll("'", "'\\''")}'
-pg_dump "$SRC" --schema-only --no-owner --no-privileges --no-comments --no-publications --no-subscriptions ${schemaFlags} -f /tmp/schema.sql || { echo '---DUMP-FAILED---'; exit 1; }
-pg_dump "$SRC" --data-only --no-owner --no-privileges ${schemaFlags} -f /tmp/data.sql || { echo '---DUMP-FAILED---'; exit 1; }
-echo '---SCHEMA-ERRORS---'
-psql "$DST" -v ON_ERROR_STOP=0 -q -f /tmp/schema.sql 2>&1 >/dev/null | grep -E 'ERROR|FATAL' || true
-echo '---DATA-ERRORS---'
+TABLES=$(psql "$SRC" -Atc "select format('%I.%I', schemaname, tablename) from pg_tables where schemaname in (${schemaIn}) order by 1") || { echo '---DUMP-FAILED---'; exit 1; }
+${schemaPhase}pg_dump "$SRC" --data-only --no-owner --no-privileges ${schemaFlags} -f /tmp/data.sql || { echo '---DUMP-FAILED---'; exit 1; }
+${replacePhase}echo '---DATA-ERRORS---'
 psql "$DST" -v ON_ERROR_STOP=0 -q -c 'SET session_replication_role = replica' -f /tmp/data.sql 2>&1 >/dev/null | grep -E 'ERROR|FATAL' || true
+echo '---COUNTS---'
+for t in $TABLES; do
+  s=$(psql "$SRC" -Atc "select count(*) from $t" 2>/dev/null || echo '-')
+  d=$(psql "$DST" -Atc "select count(*) from $t" 2>/dev/null || echo '-')
+  printf '%s\\t%s\\t%s\\n' "$t" "$s" "$d"
+done
 echo '---END---'
 `;
+}
+
+export interface ImportCount {
+  table: string;
+  source: number;
+  target: number | null;
+}
+
+function section(out: string, start: string, ends: string[]): string {
+  const i = out.indexOf(start);
+  if (i < 0) return '';
+  let rest = out.slice(i + start.length);
+  for (const e of ends) {
+    const j = rest.indexOf(e);
+    if (j >= 0) rest = rest.slice(0, j);
+  }
+  return rest;
+}
+
+export function parseImportOutput(out: string): {
+  schemaErr: string;
+  dataErr: string;
+  counts: ImportCount[];
+  policies: string[];
+} {
+  const markers = [
+    '---POLICIES---',
+    '---REPLACE---',
+    '---DATA-ERRORS---',
+    '---COUNTS---',
+    '---END---',
+  ];
+  const schemaErr = section(out, '---SCHEMA-ERRORS---', markers);
+  const policies = section(out, '---POLICIES---', markers.slice(1))
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const dataErr = section(out, '---DATA-ERRORS---', ['---COUNTS---', '---END---']);
+  const counts: ImportCount[] = section(out, '---COUNTS---', ['---END---'])
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .map((l) => {
+      const [table = '', s = '-', d = '-'] = l.split('\t');
+      return { table, source: Number(s) || 0, target: d === '-' ? null : Number(d) };
+    });
+  return { schemaErr, dataErr, counts, policies };
 }
 
 export async function importCommand(deps: Deps, o: ImportOptions): Promise<ImportReport> {
@@ -124,9 +212,8 @@ export async function importCommand(deps: Deps, o: ImportOptions): Promise<Impor
       `import script did not complete (no END marker); output: ${out.slice(0, 500)}`,
       'import.dump',
     );
-  const schemaErr = out.split('---SCHEMA-ERRORS---')[1]?.split('---DATA-ERRORS---')[0] ?? '';
-  const dataErr = out.split('---DATA-ERRORS---')[1]?.split('---END---')[0] ?? '';
-  const errors = classifyErrors(`${schemaErr}\n${dataErr}`);
+  const parsed = parseImportOutput(out);
+  const errors = classifyErrors(`${parsed.schemaErr}\n${parsed.dataErr}`);
 
   let storageSynced = false;
   if (o.storage && p.storage) {

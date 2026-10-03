@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { classifyErrors, importCommand, importScript } from '../../src/commands/import.js';
+import {
+  classifyErrors,
+  importCommand,
+  importScript,
+  PROTECTED_TABLES,
+  parseImportOutput,
+} from '../../src/commands/import.js';
 import { upsertProject } from '../../src/core/state.js';
 import { makeFakeRunner } from '../helpers/fake-runner.js';
 import { makeTestDeps } from '../helpers/fakes.js';
@@ -45,12 +51,77 @@ describe('importScript', () => {
   });
   it('fails fast when a dump fails', () => {
     const s = importScript({ src: 'a', dst: 'b', schemas: ['public'] });
-    expect(s.match(/---DUMP-FAILED---/g)).toHaveLength(2);
+    // table listing + two dumps
+    expect(s.match(/---DUMP-FAILED---/g)).toHaveLength(3);
   });
   it('rejects invalid schema names', () => {
     expect(() => importScript({ src: 'a', dst: 'b', schemas: ['public; rm -rf /'] })).toThrow(
       /schema/,
     );
+  });
+});
+
+describe('importScript options', () => {
+  const base = {
+    src: 'postgresql://u:p@h:5432/d',
+    dst: 'postgresql://a:b@c:5432/e',
+    schemas: ['public'],
+  };
+  it('lists tables once, dumps schema+data, prints policies and counts by default', () => {
+    const s = importScript(base);
+    expect(s).toContain(
+      `TABLES=$(psql "$SRC" -Atc "select format('%I.%I', schemaname, tablename) from pg_tables where schemaname in ('public') order by 1")`,
+    );
+    expect(s).toContain('--schema-only');
+    expect(s).toContain("grep -E '^CREATE POLICY'");
+    expect(s).toContain('---POLICIES---');
+    expect(s).toContain('---COUNTS---');
+    expect(s).not.toContain('TRUNCATE');
+  });
+  it('--data-only skips the schema dump/restore and the policies section', () => {
+    const s = importScript({ ...base, dataOnly: true });
+    expect(s).not.toContain('--schema-only');
+    expect(s).not.toContain('---POLICIES---');
+    expect(s).toContain('---DATA-ERRORS---');
+  });
+  it('--replace truncates imported tables that exist in the target, except protected ones', () => {
+    const s = importScript({ ...base, replace: true });
+    expect(s).toContain('---REPLACE---');
+    expect(s).toContain('TRUNCATE TABLE $t RESTART IDENTITY CASCADE');
+    for (const p of PROTECTED_TABLES) expect(s).toContain(`public.${p}`);
+    expect(s).toContain(`to_regclass('$t') is not null`);
+  });
+  it('quotes multiple schema names in the pg_tables filter', () => {
+    expect(importScript({ ...base, schemas: ['public', 'app'] })).toContain(
+      "schemaname in ('public','app')",
+    );
+  });
+});
+
+describe('parseImportOutput', () => {
+  it('extracts error sections, counts (with missing target as null) and policies', () => {
+    const out = [
+      '---SCHEMA-ERRORS---',
+      'psql:x: ERROR:  relation "auth.users" does not exist',
+      '---POLICIES---',
+      'public.items: items_owner',
+      'public.items: items_admin',
+      '---REPLACE---',
+      '---DATA-ERRORS---',
+      '---COUNTS---',
+      'public.items\t12\t12',
+      'public.profiles\t3\t-',
+      'public."Mixed"\t1\t1',
+      '---END---',
+    ].join('\n');
+    const r = parseImportOutput(out);
+    expect(r.schemaErr).toContain('auth.users');
+    expect(r.policies).toEqual(['public.items: items_owner', 'public.items: items_admin']);
+    expect(r.counts).toEqual([
+      { table: 'public.items', source: 12, target: 12 },
+      { table: 'public.profiles', source: 3, target: null },
+      { table: 'public."Mixed"', source: 1, target: 1 },
+    ]);
   });
 });
 
