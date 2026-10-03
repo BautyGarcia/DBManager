@@ -1,8 +1,10 @@
+import { chmod, writeFile } from 'node:fs/promises';
 import { quote } from 'shlex';
 import { IMAGES } from '../core/compose.js';
 import { DbmError, remoteError, userError } from '../core/exit.js';
 import { getProject } from '../core/state.js';
 import type { Deps } from './context.js';
+import { requireConfirmation } from './destroy.js';
 
 export interface ImportOptions {
   slug: string;
@@ -15,6 +17,11 @@ export interface ImportOptions {
     keySecret: string;
     bucket: string;
   };
+  dataOnly?: boolean;
+  replace?: boolean;
+  usersOut?: string;
+  yes?: boolean;
+  confirmSlug?: string;
 }
 
 export interface ImportReport {
@@ -28,6 +35,12 @@ export interface ImportReport {
     other: string[];
   };
   storageSynced: boolean;
+  counts: ImportCount[];
+  rlsPolicies: string[];
+  usersExported: number | null;
+  usersOut?: string;
+  mismatched: string[];
+  dataOnly?: boolean;
 }
 
 export function classifyErrors(stderr: string): ImportReport['errors'] {
@@ -82,7 +95,7 @@ export function importScript(o: ImportScriptOptions): string {
   const protectedIn = PROTECTED_TABLES.map((t) => `'${t}'`).join(','); // constants
   const schemaPhase = o.dataOnly
     ? ''
-    : `pg_dump "$SRC" --schema-only --no-owner --no-privileges --no-comments --no-publications --no-subscriptions ${schemaFlags} -f /tmp/schema.sql || { echo '---DUMP-FAILED---'; exit 1; }
+    : `pg_dump "$SRC" --schema-only --no-owner --no-privileges --no-comments --no-publications --no-subscriptions ${schemaFlags} -f /tmp/schema.sql || { echo '---DUMP-FAILED---' >&2; echo '---DUMP-FAILED---'; exit 1; }
 echo '---SCHEMA-ERRORS---'
 psql "$DST" -v ON_ERROR_STOP=0 -q -f /tmp/schema.sql 2>&1 >/dev/null | grep -E 'ERROR|FATAL' || true
 echo '---POLICIES---'
@@ -95,11 +108,11 @@ grep -E '^CREATE POLICY' /tmp/schema.sql | sed -E 's/^CREATE POLICY ("?[^" ]+"?)
   // statement and we abort before any data is loaded.
   const replacePhase = o.replace
     ? `echo '---REPLACE---'
-SRC_ROWS=$(psql "$SRC" -Atc "select string_agg(format('(%L,%L)', schemaname, tablename), ',') from pg_tables where schemaname in (${schemaIn}) and tablename not in (${protectedIn})") || { echo '---REPLACE-FAILED---'; exit 1; }
+SRC_ROWS=$(psql "$SRC" -Atc "select string_agg(format('(%L,%L)', schemaname, tablename), ',') from pg_tables where schemaname in (${schemaIn}) and tablename not in (${protectedIn})") || { echo '---REPLACE-FAILED---' >&2; echo '---REPLACE-FAILED---'; exit 1; }
 if [ -n "$SRC_ROWS" ]; then
-  REPLACE_TABLES=$(psql "$DST" -Atc "select string_agg(format('%I.%I', schemaname, tablename), ', ' order by schemaname, tablename) from pg_tables where (schemaname, tablename) in (values $SRC_ROWS) and tablename not in (${protectedIn})") || { echo '---REPLACE-FAILED---'; exit 1; }
+  REPLACE_TABLES=$(psql "$DST" -Atc "select string_agg(format('%I.%I', schemaname, tablename), ', ' order by schemaname, tablename) from pg_tables where (schemaname, tablename) in (values $SRC_ROWS) and tablename not in (${protectedIn})") || { echo '---REPLACE-FAILED---' >&2; echo '---REPLACE-FAILED---'; exit 1; }
   if [ -n "$REPLACE_TABLES" ]; then
-    psql "$DST" -v ON_ERROR_STOP=1 -qc "TRUNCATE TABLE $REPLACE_TABLES RESTART IDENTITY" 2>&1 || { echo '---REPLACE-FAILED---'; exit 1; }
+    TRUNC_ERR=$(psql "$DST" -v ON_ERROR_STOP=1 -qc "TRUNCATE TABLE $REPLACE_TABLES RESTART IDENTITY" 2>&1) || { echo '---REPLACE-FAILED---' >&2; echo "$TRUNC_ERR" >&2; echo '---REPLACE-FAILED---'; echo "$TRUNC_ERR"; exit 1; }
   fi
 fi
 `
@@ -107,8 +120,8 @@ fi
   return `set -u
 SRC='${o.src.replaceAll("'", "'\\''")}'
 DST='${o.dst.replaceAll("'", "'\\''")}'
-TABLES=$(psql "$SRC" -Atc "select format('%I.%I', schemaname, tablename) from pg_tables where schemaname in (${schemaIn}) order by 1") || { echo '---DUMP-FAILED---'; exit 1; }
-${schemaPhase}pg_dump "$SRC" --data-only --no-owner --no-privileges ${schemaFlags} -f /tmp/data.sql || { echo '---DUMP-FAILED---'; exit 1; }
+TABLES=$(psql "$SRC" -Atc "select format('%I.%I', schemaname, tablename) from pg_tables where schemaname in (${schemaIn}) order by 1") || { echo '---DUMP-FAILED---' >&2; echo '---DUMP-FAILED---'; exit 1; }
+${schemaPhase}pg_dump "$SRC" --data-only --no-owner --no-privileges ${schemaFlags} -f /tmp/data.sql || { echo '---DUMP-FAILED---' >&2; echo '---DUMP-FAILED---'; exit 1; }
 ${replacePhase}echo '---DATA-ERRORS---'
 psql "$DST" -v ON_ERROR_STOP=0 -q -c 'SET session_replication_role = replica' -f /tmp/data.sql 2>&1 >/dev/null | grep -E 'ERROR|FATAL' || true
 echo '---COUNTS---'
@@ -168,6 +181,17 @@ export function parseImportOutput(out: string): {
   return { schemaErr, dataErr, counts, policies };
 }
 
+export function usersExportScript(src: string): string {
+  return `set -u
+SRC='${src.replaceAll("'", "'\\''")}'
+psql "$SRC" -v ON_ERROR_STOP=1 -Atc "COPY (
+  SELECT id, email, encrypted_password, email_confirmed_at, raw_user_meta_data, raw_app_meta_data,
+         created_at, updated_at, last_sign_in_at
+  FROM auth.users WHERE email IS NOT NULL AND deleted_at IS NULL
+) TO STDOUT WITH (FORMAT csv, HEADER)"
+`;
+}
+
 export async function importCommand(deps: Deps, o: ImportOptions): Promise<ImportReport> {
   const p = getProject(await deps.store.loadState(), o.slug);
   if (/:6543(\/|$)/.test(o.from))
@@ -185,6 +209,16 @@ export async function importCommand(deps: Deps, o: ImportOptions): Promise<Impor
     throw userError(
       `${o.slug} has no storage bucket (created with --no-storage)`,
       'import.storage',
+    );
+  if (o.replace)
+    await requireConfirmation(
+      deps,
+      {
+        slug: o.slug,
+        yes: o.yes ?? false,
+        ...(o.confirmSlug ? { confirmSlug: o.confirmSlug } : {}),
+      },
+      'truncate the imported tables of',
     );
   const dst = `postgresql://${encodeURIComponent(p.postgres.appRole)}:${encodeURIComponent(p.postgres.appPassword)}@${p.dokploy.appName}:5432/${p.postgres.database}`;
 
@@ -205,7 +239,16 @@ export async function importCommand(deps: Deps, o: ImportOptions): Promise<Impor
         'bash',
         '-s',
       ],
-      { input: importScript({ src: o.from, dst, schemas }), timeoutMs: 60 * 60_000 },
+      {
+        input: importScript({
+          src: o.from,
+          dst,
+          schemas,
+          ...(o.dataOnly ? { dataOnly: true } : {}),
+          ...(o.replace ? { replace: true } : {}),
+        }),
+        timeoutMs: 60 * 60_000,
+      },
     );
     out = r.stdout;
   } catch (e) {
@@ -220,6 +263,9 @@ export async function importCommand(deps: Deps, o: ImportOptions): Promise<Impor
     );
   const parsed = parseImportOutput(out);
   const errors = classifyErrors(`${parsed.schemaErr}\n${parsed.dataErr}`);
+  const mismatched = parsed.counts
+    .filter((c) => c.target === null || c.target !== c.source)
+    .map((c) => c.table);
 
   let storageSynced = false;
   if (o.storage && p.storage) {
@@ -248,7 +294,68 @@ export async function importCommand(deps: Deps, o: ImportOptions): Promise<Impor
     );
     storageSynced = true;
   }
-  return { slug: o.slug, schemas, errors, storageSynced };
+
+  let usersExported: number | null = null;
+  if (o.usersOut) {
+    deps.io.err('exporting auth.users...\n');
+    let csv: string;
+    try {
+      csv = (
+        await deps.ssh.run(
+          [
+            'docker',
+            'run',
+            '--rm',
+            '-i',
+            '--network',
+            deps.cfg.remote.dockerNetwork,
+            IMAGES.postgres18,
+            'bash',
+            '-s',
+          ],
+          { input: usersExportScript(o.from), timeoutMs: 30 * 60_000 },
+        )
+      ).stdout;
+    } catch (e) {
+      throw remoteError(
+        `could not export auth.users (is this a Supabase source?): ${e instanceof Error ? e.message : String(e)}`,
+        'import.users',
+      );
+    }
+    await writeFile(o.usersOut, csv.endsWith('\n') ? csv : `${csv}\n`, {
+      encoding: 'utf8',
+      mode: 0o600,
+    });
+    await chmod(o.usersOut, 0o600);
+    usersExported = Math.max(0, csv.trim().split('\n').length - 1);
+  }
+  return {
+    slug: o.slug,
+    schemas,
+    errors,
+    storageSynced,
+    counts: parsed.counts,
+    rlsPolicies: parsed.policies,
+    usersExported,
+    ...(o.usersOut ? { usersOut: o.usersOut } : {}),
+    mismatched,
+    ...(o.dataOnly ? { dataOnly: true } : {}),
+  };
+}
+
+function countsBlock(r: ImportReport): string {
+  const bad = new Set(r.mismatched);
+  const rows = r.counts.map(
+    (c) =>
+      `  ${c.table}  ${c.source}  ${c.target === null ? '-' : c.target}${bad.has(c.table) ? ' MISMATCH' : ''}`,
+  );
+  let out = '';
+  if (rows.length) out += `\ntable  source  target\n${rows.join('\n')}\n`;
+  if (r.rlsPolicies.length || !r.dataOnly)
+    out += `\nRLS policies to re-implement in server code (${r.rlsPolicies.length})\n${r.rlsPolicies.map((p) => `  ${p}\n`).join('')}`;
+  if (r.usersExported !== null) out += `\nusers exported: ${r.usersExported} -> ${r.usersOut}\n`;
+  if (r.mismatched.length) out += `\nCOUNT MISMATCH in: ${r.mismatched.join(', ')}\n`;
+  return out;
 }
 
 export function formatReport(r: ImportReport): string {
@@ -287,5 +394,6 @@ export function formatReport(r: ImportReport): string {
     0
       ? '\nno errors\n'
       : '',
+    countsBlock(r),
   ].join('');
 }

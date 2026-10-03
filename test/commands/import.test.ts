@@ -1,6 +1,10 @@
+import { mkdtemp, readFile, stat } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   classifyErrors,
+  formatReport,
   importCommand,
   importScript,
   PROTECTED_TABLES,
@@ -52,7 +56,7 @@ describe('importScript', () => {
   it('fails fast when a dump fails', () => {
     const s = importScript({ src: 'a', dst: 'b', schemas: ['public'] });
     // table listing + two dumps
-    expect(s.match(/---DUMP-FAILED---/g)).toHaveLength(3);
+    expect(s.match(/---DUMP-FAILED---/g)).toHaveLength(6);
   });
   it('rejects invalid schema names', () => {
     expect(() => importScript({ src: 'a', dst: 'b', schemas: ['public; rm -rf /'] })).toThrow(
@@ -97,6 +101,7 @@ describe('importScript options', () => {
     expect(s).toContain('TRUNCATE TABLE $REPLACE_TABLES RESTART IDENTITY"');
     expect(s).not.toContain('CASCADE');
     expect(s).toContain("echo '---REPLACE-FAILED---'; exit 1");
+    expect(s).toContain("echo '---REPLACE-FAILED---' >&2");
     expect(s.indexOf('---REPLACE-FAILED---')).toBeLessThan(s.indexOf('---DATA-ERRORS---'));
   });
   it('quotes multiple schema names in the pg_tables filter', () => {
@@ -240,5 +245,97 @@ describe('importCommand', () => {
     await expect(
       importCommand(t.deps, { slug: 'my-app', from: 'postgresql://u:p@h:5432/d' }),
     ).rejects.toThrow(/END marker/);
+  });
+});
+
+const OUT_OK =
+  '---SCHEMA-ERRORS---\n---POLICIES---\npublic.items: items_owner\n---DATA-ERRORS---\n---COUNTS---\npublic.items\t2\t2\npublic.gone\t5\t-\n---END---';
+
+describe('importCommand v2', () => {
+  it('returns counts, policies and mismatches in the report', async () => {
+    const runner = makeFakeRunner([{ match: /bash -s/, stdout: OUT_OK }]);
+    const t = makeTestDeps({ runner });
+    t.store.state = upsertProject(t.store.state, fakeProject('my-app'));
+    const r = await importCommand(t.deps, { slug: 'my-app', from: 'postgresql://u:p@h:5432/d' });
+    expect(r.counts).toHaveLength(2);
+    expect(r.rlsPolicies).toEqual(['public.items: items_owner']);
+    expect(r.mismatched).toEqual(['public.gone']);
+    expect(r.usersExported).toBeNull();
+    const text = formatReport(r);
+    expect(text).toMatch(/public\.items\s+2\s+2/);
+    expect(text).toMatch(/public\.gone.*MISMATCH/);
+    expect(text).toContain('RLS policies to re-implement in server code (1)');
+    expect(text).toContain('COUNT MISMATCH in: public.gone');
+  });
+  it('--replace requires confirmation and passes replace/dataOnly into the script', async () => {
+    const runner = makeFakeRunner([{ match: /bash -s/, stdout: OUT_OK }]);
+    const t = makeTestDeps({ runner });
+    t.store.state = upsertProject(t.store.state, fakeProject('my-app'));
+    t.deps.confirm = async () => false;
+    await expect(
+      importCommand(t.deps, {
+        slug: 'my-app',
+        from: 'postgresql://u:p@h:5432/d',
+        replace: true,
+        yes: false,
+      }),
+    ).rejects.toMatchObject({ exitCode: 1 });
+    expect(t.runner.calls).toHaveLength(0);
+    await importCommand(t.deps, {
+      slug: 'my-app',
+      from: 'postgresql://u:p@h:5432/d',
+      replace: true,
+      dataOnly: true,
+      yes: true,
+      confirmSlug: 'my-app',
+    });
+    const script = t.runner.calls[0]?.input ?? '';
+    expect(script).toContain('---REPLACE---');
+    expect(script).not.toContain('--schema-only');
+  });
+  it('--users-out exports auth.users to a 0600 CSV without printing it', async () => {
+    const csv = 'id,email,encrypted_password\n1,a@b.c,$2a$10$x\n';
+    const runner = makeFakeRunner([
+      { match: /bash -s/, stdout: OUT_OK, once: true },
+      { match: /bash -s/, stdout: csv, once: true },
+    ]);
+    const t = makeTestDeps({ runner });
+    t.store.state = upsertProject(t.store.state, fakeProject('my-app'));
+    const dir = await mkdtemp(join(tmpdir(), 'dbm-users-'));
+    const file = join(dir, 'auth-users.csv');
+    const r = await importCommand(t.deps, {
+      slug: 'my-app',
+      from: 'postgresql://u:p@h:5432/d',
+      usersOut: file,
+    });
+    expect(r.usersExported).toBe(1);
+    expect(await readFile(file, 'utf8')).toBe(csv);
+    expect((await stat(file)).mode & 0o777).toBe(0o600);
+    expect(t.outLines.join('') + t.errLines.join('')).not.toContain('$2a$10$x');
+    const exportCall = t.runner.calls[1];
+    expect(exportCall?.input).toContain('COPY (');
+    expect(exportCall?.input).toContain(
+      'FROM auth.users WHERE email IS NOT NULL AND deleted_at IS NULL',
+    );
+  });
+  it('--users-out on a source without an auth schema is a clear remote error', async () => {
+    const runner = makeFakeRunner([
+      { match: /bash -s/, stdout: OUT_OK, once: true },
+      {
+        match: /bash -s/,
+        fail: true,
+        stderr: 'ERROR:  relation "auth.users" does not exist',
+        once: true,
+      },
+    ]);
+    const t = makeTestDeps({ runner });
+    t.store.state = upsertProject(t.store.state, fakeProject('my-app'));
+    await expect(
+      importCommand(t.deps, {
+        slug: 'my-app',
+        from: 'postgresql://u:p@h:5432/d',
+        usersOut: '/tmp/x.csv',
+      }),
+    ).rejects.toMatchObject({ exitCode: 2, step: 'import.users', message: /auth\.users/ });
   });
 });

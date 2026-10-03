@@ -201,7 +201,26 @@ export function buildProgram(io: Io, depsFactory: DepsFactory = defaultDepsFacto
     .option('--storage-key <id>')
     .option('--storage-secret <secret>')
     .option('--storage-bucket <name>')
-    .action(async function (this: Command, slug: string, opts: Record<string, string | undefined>) {
+    .option(
+      '--data-only',
+      'skip schema; load data only (rehearsal already created the schema)',
+      false,
+    )
+    .option(
+      '--replace',
+      'truncate previously imported tables before loading (needs confirmation)',
+      false,
+    )
+    .option(
+      '--users-out <file>',
+      'export auth.users to a local CSV (mode 0600) for scripts/migrate-supabase-users.ts',
+    )
+    .option('--confirm <slug>', 'required with --yes --replace')
+    .action(async function (
+      this: Command,
+      slug: string,
+      opts: Record<string, string | undefined> & { dataOnly?: boolean; replace?: boolean },
+    ) {
       const g = globals(this);
       const storage =
         opts.storageEndpoint &&
@@ -221,6 +240,11 @@ export function buildProgram(io: Io, depsFactory: DepsFactory = defaultDepsFacto
         importCommand(deps, {
           slug,
           from: opts.from ?? '',
+          dataOnly: opts.dataOnly === true,
+          replace: opts.replace === true,
+          yes: g.yes,
+          ...(opts.usersOut ? { usersOut: opts.usersOut } : {}),
+          ...(opts.confirm ? { confirmSlug: opts.confirm } : {}),
           schemas: (opts.schemas ?? 'public')
             .split(',')
             .map((s) => s.trim())
