@@ -77,7 +77,7 @@ Caveat: a source `public.user` table collides with better-auth's `user` table. T
 
 ### Counts and policies in the report
 
-The report ends with a counts table (`table source target`). A row marked `MISMATCH` means the row counts differ, and the report adds `COUNT MISMATCH in: ...`. It then lists `RLS policies to re-implement in server code (N)`, and `users exported: N -> <file>` when `--users-out` was used. With `--json` the same data is in `counts`, `rlsPolicies`, `mismatched` and `usersExported`.
+The report ends with a counts table (`table source target`). A row marked `MISMATCH` means the row counts differ, and the report adds `COUNT MISMATCH in: ...`. It then lists `RLS policies to re-implement in server code (N)` (omitted when `--data-only` was used and no policies were found), and `users exported: N -> <file>` when `--users-out` was used. With `--json` the same data is in `counts`, `rlsPolicies`, `mismatched` and `usersExported`.
 
 ### Doing it by hand
 
@@ -206,5 +206,6 @@ Push the env vars to Vercel (production, preview and development as separate cal
 3. Remove the Supabase env vars from Vercel (`NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, in all three environments).
 4. Pause the Supabase project.
 5. Delete the Supabase S3 access key.
+6. Locally, delete the `# pre-dbm` and `*SUPABASE*` lines from `.env.local`.
 
 If something goes wrong before step 3, see [Roll back a cutover](runbook.md#roll-back-a-cutover).
