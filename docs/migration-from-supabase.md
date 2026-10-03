@@ -4,6 +4,16 @@ This guide moves one Supabase project to one `dbm` project: schema, data, storag
 
 Nothing here modifies the Supabase project. Keep it running until the new deployment is verified.
 
+## With the /dbmanager skill (recommended)
+
+Install the skill once by symlinking `skills/dbmanager` into `~/.claude/skills/`. Then, in the app folder, run two commands.
+
+1. `/dbmanager` detects Supabase code and runs migrate mode, a rehearsal. It creates the dbm project, wires the templates, and runs `dbm import` with `--users-out` (and one storage bucket if you gave S3 details). Supabase stays live and read-only. It then writes `MIGRATION.md`, an inventory of Supabase usages, RLS policies and import errors, as `- [ ]` items. It also asks whether to preserve user accounts.
+2. Rewrite the app per `MIGRATION.md` with your usual development skills. Check items off or delete them.
+3. `/dbmanager cutover` refuses to run while any `- [ ]` is left. It takes `dbm backup <slug>` as the rollback point, re-imports with `--data-only --replace`, checks that every table count matches, loads users if you preserved them, and pushes the env vars to Vercel. It ends with the closing checklist (see [Deploy and verify](#4-deploy-and-verify)).
+
+The sections below describe what the skill runs and how to do the same by hand.
+
 ## 1. Create the target project
 
 ```bash
@@ -53,6 +63,22 @@ Errors are grouped. Each group is expected for Supabase sources; fix them in you
 
 Because the restore runs with `ON_ERROR_STOP=0`, objects that failed are missing. Fix the SQL, then re-run only the failed statements with `dbm psql <slug>`.
 
+### Re-import flags
+
+- `--data-only` skips the schema phase (and RLS policy detection). Use it when the schema already exists, as after a rehearsal.
+- `--replace` truncates the tables that exist in both source and target, then loads the data again. Protected tables are never truncated: `user`, `session`, `account`, `verification`, `rateLimit` and `__drizzle_migrations`. It runs one `TRUNCATE ... RESTART IDENTITY` without CASCADE. If a protected table has a foreign key to an imported table, the statement fails and the import aborts with `---REPLACE-FAILED---` before any data is loaded. It asks you to retype the slug; non-interactively pass `--yes --confirm <slug>`.
+- `--users-out <file>` writes `auth.users` as CSV with mode 0600 and never prints it. Rows need a non-null email and a null `deleted_at`. Columns: `id, email, encrypted_password, email_confirmed_at, raw_user_meta_data, raw_app_meta_data, created_at, updated_at, last_sign_in_at`. A source without an `auth` schema fails with a clear error.
+
+Take `dbm backup <slug>` before a `--replace` run. It is your rollback point.
+
+Caveat: a source `public.user` table collides with better-auth's `user` table. The schema import reports "already exists", and the data load copies its rows into better-auth's table. Rename or drop that table in the source before importing, or expect to clean up `user` afterwards.
+
+`--storage-bucket` copies one bucket per run.
+
+### Counts and policies in the report
+
+The report ends with a counts table (`table source target`). A row marked `MISMATCH` means the row counts differ, and the report adds `COUNT MISMATCH in: ...`. It then lists `RLS policies to re-implement in server code (N)`, and `users exported: N -> <file>` when `--users-out` was used. With `--json` the same data is in `counts`, `rlsPolicies`, `mismatched` and `usersExported`.
+
 ### Doing it by hand
 
 The same procedure with plain tools, from a machine that can reach the source and the target:
@@ -80,7 +106,7 @@ psql "$DBM_URL" -v ON_ERROR_STOP=0 -f schema.sql 2> schema.errors
 psql "$DBM_URL" -v ON_ERROR_STOP=0 -c 'SET session_replication_role = replica' -f data.sql 2> data.errors
 ```
 
-Step 3 is also how you produce the CSV for the user migration below; `dbm import` does not export users. Note: `DBM_URL` must be a connection that allows `SET session_replication_role` (the app role has that grant). Run the restore through `DATABASE_URL_SESSION`, not the transaction-mode `DATABASE_URL`, because the `SET` must persist across statements in one session.
+Step 3 is also how you produce the CSV for the user migration below; `dbm import --users-out <file>` does the same. Note: `DBM_URL` must be a connection that allows `SET session_replication_role` (the app role has that grant). Run the restore through `DATABASE_URL_SESSION`, not the transaction-mode `DATABASE_URL`, because the `SET` must persist across statements in one session.
 
 The Supabase CLI is an alternative that needs no `pg_dump` install and excludes managed schemas automatically:
 
@@ -173,4 +199,12 @@ There are two options:
 
 ## 4. Deploy and verify
 
-Push the env vars to Vercel (production, preview and development as separate calls; `BETTER_AUTH_URL` for production only), pin `gru1` in `vercel.json`, deploy, and exercise sign-in, uploads and the main queries. Then pause or delete the Supabase project and revoke its S3 keys.
+Push the env vars to Vercel (production, preview and development as separate calls; `BETTER_AUTH_URL` for production only) and pin `gru1` in `vercel.json`. Then follow the order of the skill's closing checklist:
+
+1. Deploy to production: `vercel --prod`.
+2. Verify sign-in and one write on the production URL, plus uploads and the main queries.
+3. Remove the Supabase env vars from Vercel (`NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, in all three environments).
+4. Pause the Supabase project.
+5. Delete the Supabase S3 access key.
+
+If something goes wrong before step 3, see [Roll back a cutover](runbook.md#roll-back-a-cutover).

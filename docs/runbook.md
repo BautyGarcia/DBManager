@@ -9,6 +9,8 @@ Conventions: `<slug>` is the project name, `<slug_db>` is the slug with `-` repl
 | Scenario | Section |
 |---|---|
 | Bad migration corrupted data | [Restore a dump in place](#restore-a-dump-in-place) |
+| Cutover went wrong | [Roll back a cutover](#roll-back-a-cutover) |
+| Take a safety dump before risky work | `dbm backup <slug>` |
 | Accidental `destroy` | [Recover a destroyed project](#recover-a-destroyed-project) |
 | VPS disk dies | [VPS lost](#vps-lost) |
 | Garage LMDB corruption | [Garage metadata recovery](#garage-metadata-recovery) |
@@ -48,6 +50,14 @@ Use when a migration or a bug damaged data and you want yesterday's database bac
    ```
    (plus any extension listed under `projects.<slug>.postgres.extensions` in `~/.dbm/state.json`), then re-run step 2. The restore skips extension entries, so the extensions must exist before it runs.
 4. Clone instead of overwrite when you only want to inspect old data: `dbm restore <slug> <Name> --as <staging-slug>`, then `dbm destroy <staging-slug>` when done.
+
+## Roll back a cutover
+
+`/dbmanager cutover` runs `dbm backup <slug>` first, so every cutover has a rollback point. Run it yourself before a manual `dbm import --replace` too.
+
+1. Find the dump taken at the start of the cutover with `dbm backup <slug>` (it lists dumps and takes a fresh one) and pick the Name taken just before the cutover started.
+2. Restore it as in [Restore a dump in place](#restore-a-dump-in-place): `dbm restore <slug> <Name>`.
+3. Vercel is untouched until you remove the Supabase env vars. Until then, re-deploying the previous commit restores the old app, which still reads from Supabase. The Supabase project stays unchanged throughout, so nothing there needs undoing unless you already paused it or deleted its S3 key.
 
 ## Recover a destroyed project
 

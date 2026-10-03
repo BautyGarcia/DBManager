@@ -1,6 +1,6 @@
 # db-manager (`dbm`)
 
-`dbm` turns one VPS into a personal database platform. Each app gets its own isolated Postgres container, its own S3 bucket, and credentials that drop straight into a Next.js project on Vercel. Creating, pausing, destroying, backing up and inspecting projects is one command each, from a laptop or from an AI agent (a skill ships in `skills/dbm/`). It is a self-hosted replacement for the "one Supabase project per app" workflow: no anon key, no PostgREST, all queries run in server code, auth is better-auth inside each app.
+`dbm` turns one VPS into a personal database platform. Each app gets its own isolated Postgres container, its own S3 bucket, and credentials that drop straight into a Next.js project on Vercel. Creating, pausing, destroying, backing up and inspecting projects is one command each, from a laptop or from an AI agent (a skill ships in `skills/dbmanager/`). It is a self-hosted replacement for the "one Supabase project per app" workflow: no anon key, no PostgREST, all queries run in server code, auth is better-auth inside each app.
 
 ```
                                 PUBLIC INTERNET
@@ -70,12 +70,16 @@ Paste the printed variables into `.env.local` and into Vercel (`vercel env add N
 | `dbm psql <slug>` | Interactive psql in the container; `--admin` for the superuser |
 | `dbm storage public <slug>` | Serve the bucket on `<slug>.web.<domain>`; `--domain <host>` adds a vanity host, `--off` reverses |
 | `dbm storage cors <slug> --origin <origin...>` | Set allowed browser origins |
-| `dbm import <slug> --from <url>` | Import a Supabase or other Postgres database, optionally with storage (`--schemas`, `--storage-*`); see [the migration guide](docs/migration-from-supabase.md) |
+| `dbm import <slug> --from <url>` | Import a Supabase or other Postgres database, optionally with storage (`--schemas`, `--storage-*`, `--data-only`, `--replace`, `--users-out <file>`); see [the migration guide](docs/migration-from-supabase.md) |
 | `dbm doctor` | Check versions, drift, TLS, backups, disk; exits 2 on failure |
 
 A hidden maintenance command, `dbm sync-pgbouncer`, re-renders the PgBouncer files from state and reloads PgBouncer.
 
 Environment variables printed by `dbm env`: `DATABASE_URL` (transaction pooling, port 6432), `DATABASE_URL_SESSION` (session pooling, used by drizzle-kit), `S3_ENDPOINT`, `S3_REGION`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` (unless `--no-storage`), `BETTER_AUTH_SECRET`, an empty `BETTER_AUTH_URL`, and when applicable `S3_PUBLIC_BASE_URL` and `DATABASE_SSL_CA`.
+
+### Migrating from Supabase
+
+Install the skill by symlinking `skills/dbmanager` into `~/.claude/skills/`. Run `/dbmanager` in the app folder; migrate mode is detected from the Supabase code. It creates the project, rehearses the import and writes `MIGRATION.md`, a checklist of what to rewrite. Work through that file, then run `/dbmanager cutover` to re-import, push the env vars and get the closing checklist. See [the migration guide](docs/migration-from-supabase.md).
 
 ## Where things live on the VPS
 
