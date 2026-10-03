@@ -15,7 +15,7 @@ import { makeGarageAdmin } from '../../src/adapters/garage.js';
 import { makePostgresAdmin } from '../../src/adapters/postgres.js';
 import { restoreScript } from '../../src/commands/backup.js';
 import { emptyBucket } from '../../src/commands/destroy.js';
-import { importScript, PROTECTED_TABLES, parseImportOutput } from '../../src/commands/import.js';
+import { importScript, parseImportOutput } from '../../src/commands/import.js';
 import { renderPgbouncerIni, renderUserlist } from '../../src/core/pgbouncer.js';
 import { scramSha256Verifier } from '../../src/core/scram.js';
 import { createDatabaseSql, createRoleSql, extensionsSql } from '../../src/core/sql.js';
@@ -394,6 +394,7 @@ describe('destroy --purge-storage emptyBucket (C1)', () => {
   });
 });
 
+// Relies on the first describe's beforeAll having created my_app / my_app_app.
 describe('import (rehearsal, then cutover --data-only --replace)', () => {
   const SRC = 'postgresql://test_admin:adminpw@dbm-test-pg:5432/src_db';
   const DST = `postgresql://my_app_app:${encodeURIComponent(APP_PW)}@dbm-test-pg:5432/my_app`;
@@ -414,6 +415,8 @@ describe('import (rehearsal, then cutover --data-only --replace)', () => {
       { ...admin, database: 'src_db' },
       `
       CREATE TABLE items (id serial PRIMARY KEY, name text NOT NULL);
+      CREATE TABLE "user" (id text PRIMARY KEY, email text);
+      INSERT INTO "user" VALUES ('s1', 'source@x.test');
       CREATE TABLE profiles (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), display_name text);
       ALTER TABLE items ENABLE ROW LEVEL SECURITY;
       CREATE POLICY items_owner ON items USING (true);
@@ -435,6 +438,7 @@ describe('import (rehearsal, then cutover --data-only --replace)', () => {
 
   it('rehearsal: schema + data land, policies are reported, counts match', async () => {
     const r = await runImport({});
+    expect(r.schemaErr).toContain('already exists'); // target already has "user"
     expect(r.policies).toEqual(['public.items: items_owner']);
     expect(r.counts).toEqual(
       expect.arrayContaining([
@@ -457,11 +461,12 @@ describe('import (rehearsal, then cutover --data-only --replace)', () => {
         { table: 'public.profiles', source: 0, target: 0 },
       ]),
     );
+    // u1 survives only if the protected filter kept "user" out of the TRUNCATE;
+    // s1 was copied by the rehearsal and is rejected as a duplicate on reload (no extra rows).
     const users = await pgAdmin.runSql(
       { ...admin, database: 'my_app' },
-      `select count(*) from "user";`,
+      `select id from "user" order by 1;`,
     );
-    expect(users.trim()).toBe('1');
-    expect(PROTECTED_TABLES).toContain('user');
+    expect(users.trim().split('\n')).toEqual(['s1', 'u1'].sort());
   });
 });
