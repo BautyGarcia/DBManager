@@ -75,4 +75,19 @@ describe('skills/dbmanager/inventory.mjs', () => {
     expect(md).toContain('[redacted]');
     expect(md).not.toContain('eyJ');
   });
+
+  it('never emits a backtick inside a wrapped snippet', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'inv-bt-'));
+    await writeFile(
+      join(dir, 'a.ts'),
+      "import 'supabase';\nconst q = `x`; sb.from('t').select(`id, name`);\n",
+    );
+    await execa('node', ['skills/dbmanager/inventory.mjs', dir]);
+    const md = await readFile(join(dir, 'MIGRATION.md'), 'utf8');
+    const line = md.split('\n').find((l) => l.includes('sb.from'));
+    expect(line).toBeDefined();
+    expect(line).not.toContain('```');
+    expect(line).toContain("'id, name'");
+    expect(line?.match(/`/g)).toHaveLength(2);
+  });
 });

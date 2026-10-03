@@ -53,6 +53,11 @@ describe('importScript', () => {
     const s = importScript({ src: "postgresql://u:p'w@h:5432/d", dst: 'x', schemas: ['public'] });
     expect(s).toContain("SRC='postgresql://u:p'\\''w@h:5432/d'");
   });
+  it('iterates tables line by line so names with spaces survive', () => {
+    const s = importScript({ src: 'a', dst: 'b', schemas: ['public'] });
+    expect(s).toContain('while IFS= read -r t');
+    expect(s).not.toContain('for t in $TABLES');
+  });
   it('fails fast when a dump fails', () => {
     const s = importScript({ src: 'a', dst: 'b', schemas: ['public'] });
     // table listing + two dumps
@@ -125,6 +130,7 @@ describe('parseImportOutput', () => {
       'public.items\t12\t12',
       'public.profiles\t3\t-',
       'public."Mixed"\t1\t1',
+      'public."My Table"\t2\t2',
       '---END---',
     ].join('\n');
     const r = parseImportOutput(out);
@@ -134,6 +140,7 @@ describe('parseImportOutput', () => {
       { table: 'public.items', source: 12, target: 12 },
       { table: 'public.profiles', source: 3, target: null },
       { table: 'public."Mixed"', source: 1, target: 1 },
+      { table: 'public."My Table"', source: 2, target: 2 },
     ]);
   });
 });

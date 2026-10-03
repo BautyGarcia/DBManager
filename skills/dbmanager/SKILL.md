@@ -23,6 +23,7 @@ bash ~/.claude/skills/dbmanager/preflight.sh "$PWD"
 | Field | If false/empty |
 |---|---|
 | `dbm` | run `dbmInstallHint`, re-run preflight |
+| `dbmImportV2` false | STOP: the installed dbm is older than this skill. In the db-manager checkout run `npm run build` (and `npm link` once), then re-run preflight. Never drop flags from the commands in this skill. |
 | `configured` | STOP: the operator must run `dbm init` first |
 | `templatesDir` | STOP: dbm install is broken |
 | `slugOk` | derive a corrected slug (§2.2) and ask |
@@ -106,19 +107,21 @@ bash ~/.claude/skills/dbmanager/preflight.sh "$PWD"
 
 Supabase stays live, read-only. You may write the skill's files (`lib/*.ts` templates, `drizzle.config.ts`, `scripts/`), including the bcrypt hook in `lib/auth.ts`; never edit application code (components, routes, `lib/supabase.ts`).
 
-1. **Storage check**: `grep -rlF '.storage.' --exclude-dir={node_modules,.next} --include='*.[jt]s' --include='*.[jt]sx' .`. If it matches, list bucket names: `grep -rhoE "storage\.from\(['\"][^'\"]+['\"]\)" --exclude-dir={node_modules,.next} --include='*.[jt]s' --include='*.[jt]sx' . | sort -u`.
-2. **Ask once, in one message**: "Paste your Supabase connection string: direct or session pooler (Dashboard > Connect, port 5432, never 6543)." Only if step 1 matched, add: "and the Storage S3 endpoint, region, access key id and secret (Settings > Storage > S3). I found bucket(s): <names>. Confirm which to copy (one per rehearsal)." Say: "These are used in a single command and never shown back." Exception: direct host unreachable (IPv6-only): ask for the session-pooler URL, retry once.
-3. Run §2 steps 2, 4-9 (append mode in step 5), then the db-host grep of step 11. No Vercel until cutover.
-4. **Import** (secrets only here; never repeat the command or its output in prose):
+1. **Already rehearsed?** If `MIGRATION.md` exists, STOP: "This app was already rehearsed. Run /dbmanager cutover. To start over: `dbm destroy <slug>` (operator), delete MIGRATION.md, then /dbmanager." Same STOP if `dbm create` returns `"existed": true`.
+2. **Storage check**: `grep -rlF '.storage.' --exclude-dir={node_modules,.next} --include='*.[jt]s' --include='*.[jt]sx' .`. If it matches, list bucket names: `grep -rhoE "storage\.from\(['\"][^'\"]+['\"]\)" --exclude-dir={node_modules,.next} --include='*.[jt]s' --include='*.[jt]sx' . | sort -u`.
+3. **Ask once, in one message**: "Paste your Supabase connection string: direct or session pooler (Dashboard > Connect, port 5432, never 6543)." Only if step 2 matched, add: "and the Storage S3 endpoint, region, access key id and secret (Settings > Storage > S3). I found bucket(s): <names>. Confirm which to copy (one per rehearsal)." Say: "These are used in a single command and never shown back." Exception: direct host unreachable (IPv6-only): ask for the session-pooler URL, retry once.
+4. Run §2 steps 2, 4-9 (append mode in step 5), then the db-host grep of step 11. No Vercel until cutover.
+5. **Import** (secrets only here; never repeat the command or its output in prose):
    ```bash
    dbm import <slug> --from "<url>" [--storage-endpoint <e> --storage-region <r> --storage-key <id> --storage-secret <s> --storage-bucket <b>] --users-out .dbm-users.csv --json > .dbm-import.json
    ```
-5. **Inventory**:
+   Any non-zero exit: `rm -f .dbm-import.json .dbm-users.csv`, report the one-line error without URLs, STOP.
+6. **Inventory**:
    ```bash
    node ~/.claude/skills/dbmanager/inventory.mjs . --import-json .dbm-import.json && rm -f .dbm-import.json
    ```
    Keep its printed `MIGRATION.md: ...` line.
-6. **Users**: ask "Preserve existing accounts (passwords keep working) or have users re-register?"
+7. **Users**: ask "Preserve existing accounts (passwords keep working) or have users re-register?"
    - Preserve:
      ```bash
      npm i -D csv-parse tsx && npm i bcryptjs@^3.0.3
@@ -127,7 +130,7 @@ Supabase stays live, read-only. You may write the skill's files (`lib/*.ts` temp
      ```
      Then apply step 3 of "Preserve accounts" in `<dbmRoot>/docs/migration-from-supabase.md` (bcrypt verify + rehash hook) to `lib/auth.ts`.
    - Both: `rm -f .dbm-users.csv`.
-7. **Hand off** (no tsc gate: old Supabase code still compiles; `MIGRATION.md` is the gate). End with the §2.11 summary with `- Storage (dbm): bucket <slug>; presigned helpers in lib/s3.ts`, `- Vercel: untouched until cutover`, and its `Next:` line replaced by:
+8. **Hand off** (no tsc gate: old Supabase code still compiles; `MIGRATION.md` is the gate). End with the §2.11 summary with `- Storage (dbm): bucket <slug>; presigned helpers in lib/s3.ts`, `- Vercel: untouched until cutover`, and its `Next:` line replaced by:
    ```
    - Supabase: data copied (rehearsal); storage bucket <name> copied | not used; users preserved | re-register
    - MIGRATION.md: N usages in F files, P policies, E import errors
@@ -141,14 +144,14 @@ Supabase stays live, read-only. You may write the skill's files (`lib/*.ts` temp
    - `dbm list --json | jq -e '.[] | select(.slug=="<slug>" and .status=="running")' >/dev/null` or say "Project <slug> is not running (dbm list): resume it first."
    - `MIGRATION.md` exists or say "No MIGRATION.md here: run /dbmanager first (migrate mode)."
    - Unchecked = lines matching `^- \[ \]` (checked or deleted lines are done). N = `grep -c '^- \[ \]' MIGRATION.md`; if N > 0, print `grep '^- \[ \]' MIGRATION.md` and say "Cutover blocked: MIGRATION.md has N unchecked items (listed above). Finish them with your development skills, then run /dbmanager cutover again. Nothing was changed."
-2. **Ask once**: "Did the rehearsal copy a Storage bucket? If yes, paste the S3 endpoint, region, access key id, secret and bucket name again. Also paste the Supabase connection string (port 5432, never 6543) and the production domain (for BETTER_AUTH_URL)." Never shown back.
-3. **Rollback point**: `dbm backup <slug>`.
+2. **Ask once**: "Did the rehearsal copy a Storage bucket? If yes, paste the S3 endpoint, region, access key id, secret and bucket name again. Also paste the Supabase connection string (port 5432, never 6543) and the production domain (for BETTER_AUTH_URL)." Never shown back. Before answering, put the Supabase-backed app into maintenance or read-only mode: writes after the snapshot are not copied. Deploy right after cutover.
+3. **Rollback point**: `dbm backup <slug>`. If it fails, STOP before the import and report the error.
 4. **Re-import** (add `--users-out .dbm-users.csv` if `scripts/migrate-supabase-users.ts` exists, and the `--storage-*` flags if a bucket was given):
    ```bash
    dbm import <slug> --from "<url>" --data-only --replace --yes --confirm <slug> --json > .dbm-import.json
    jq -e '.mismatched | length == 0' .dbm-import.json
    ```
-   If the import exits non-zero (reason: "the replace import failed: <one-line stderr summary, no URLs>") or `jq -e` fails (reason: "these tables did not match after the replace import: <`jq -r '.mismatched[]' .dbm-import.json`>"): `rm -f .dbm-users.csv .dbm-import.json`, say "Cutover stopped before Vercel: <reason>. Vercel and the Supabase project are untouched. To roll the dbm database back, run `dbm restore <slug>` with the backup taken at the start of this cutover (see docs/runbook.md)." and STOP (no summary). Else, if preserving users, `npx tsx scripts/migrate-supabase-users.ts .dbm-users.csv`; then `rm -f .dbm-users.csv .dbm-import.json`.
+   If the import exits non-zero (reason: "the replace import failed: <one-line stderr summary, no URLs>") or `jq -e` fails (reason: "these tables did not match after the replace import: <`jq -r '.mismatched[]' .dbm-import.json`> (a source still taking writes causes this; freeze writes and re-run /dbmanager cutover)"): `rm -f .dbm-users.csv .dbm-import.json`, say "Cutover stopped before Vercel: <reason>. Vercel and the Supabase project are untouched. To roll the dbm database back, run `dbm restore <slug>` with the backup taken at the start of this cutover (see docs/runbook.md)." and STOP (no summary). Else, if preserving users, `npx tsx scripts/migrate-supabase-users.ts .dbm-users.csv` (if it fails, print the error, keep `.dbm-users.csv` for a retry, and STOP before Vercel); then `rm -f .dbm-users.csv .dbm-import.json`.
 5. **Vercel**: linked, run §2 step 10 including `BETTER_AUTH_URL`; not linked, print those commands under "After `vercel link`, run:". Remove nothing here.
 6. End with exactly:
    ```
@@ -177,7 +180,7 @@ Supabase stays live, read-only. You may write the skill's files (`lib/*.ts` temp
 |---|---|
 | `> .env.local` over an existing file (loses Supabase keys) | §2.5 append recipe |
 | Supabase app treated as connect | §3 |
-| Inventing a data/users/storage procedure | §3.4-3.6 |
+| Inventing a data/users/storage procedure | §3.5-3.7 |
 | Rewriting Supabase calls yourself | Stop at the summary |
-| tsc gate in migrate mode | Skip (§3.7) |
+| tsc gate in migrate mode | Skip (§3.8) |
 | Inventing env loading for drizzle-kit | `drizzle.config.ts` loads `.env.local` |

@@ -53,11 +53,11 @@ Use when a migration or a bug damaged data and you want yesterday's database bac
 
 ## Roll back a cutover
 
-`/dbmanager cutover` runs `dbm backup <slug>` first, so every cutover has a rollback point. Run it yourself before a manual `dbm import --replace` too.
+`/dbmanager cutover` runs `dbm backup <slug>` first, so every cutover has a rollback point. Run it yourself before a manual `dbm import --replace` too. Writes made to Supabase after the snapshot are not copied, so freeze them first; a count mismatch usually means the source was still taking writes (freeze and re-run).
 
 1. The cutover's own `dbm backup <slug>`, its first command, is the rollback point. List the dumps the way [Restore a dump in place](#restore-a-dump-in-place) does and choose the newest dump created before the `--replace` import, by its Name. Never use `latest`: running `dbm backup` again adds a fresh dump of the post-cutover state.
 2. Restore it as in that section: `dbm restore <slug> <Name>`. Non-interactively: `dbm restore <slug> <Name> --yes --confirm <slug>`.
-3. If the cutover stopped before Vercel (failed import or count mismatch), Vercel is untouched and only the database needs restoring. After a successful cutover, Vercel holds both sets of variables: the cutover added the dbm ones, and the Supabase ones stay until closing step 3. To roll the app back, revert the code to the pre-migration commit (it still reads the Supabase variables) and redeploy. Do not remove the Supabase variables until the dbm app is verified. The Supabase project stays unchanged throughout, so nothing there needs undoing unless you already paused it or deleted its S3 key.
+3. If the cutover stopped before Vercel (failed import or count mismatch), Vercel is untouched and only the database needs restoring. After a successful cutover, Vercel holds both sets of variables: the cutover added the dbm ones, and the Supabase ones stay until closing step 3. To roll the app back, revert the code to the pre-migration commit (it still reads the Supabase variables) and redeploy. If the old app read `DATABASE_URL` from Vercel, the cutover's `vercel env add DATABASE_URL --force` replaced it; set it back before redeploying the old code. Do not remove the Supabase variables until the dbm app is verified. The Supabase project stays unchanged throughout, so nothing there needs undoing unless you already paused it or deleted its S3 key.
 
 ## Recover a destroyed project
 

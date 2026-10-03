@@ -1,4 +1,4 @@
-import { cp, mkdtemp, rename } from 'node:fs/promises';
+import { chmod, cp, mkdtemp, rename, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execa } from 'execa';
@@ -35,5 +35,25 @@ describe('skills/dbmanager/preflight.sh modes', () => {
       `const f=require('fs');const p=JSON.parse(f.readFileSync('${dir}/package.json'));delete p.dependencies['@supabase/supabase-js'];delete p.dependencies['@supabase/ssr'];f.writeFileSync('${dir}/package.json',JSON.stringify(p))`,
     ]);
     expect((await preflight(dir)).mode).toBe('connect');
+  });
+});
+
+describe('preflight dbmImportV2', () => {
+  async function withFakeDbm(helpText: string) {
+    const fakeDir = await mkdtemp(join(tmpdir(), 'pf-fake-'));
+    const bin = join(fakeDir, 'dbm');
+    await writeFile(bin, `#!/bin/sh\necho '${helpText}'\n`);
+    await chmod(bin, 0o755);
+    const dir = await mkdtemp(join(tmpdir(), 'pf-v2-'));
+    const r = await execa('bash', ['skills/dbmanager/preflight.sh', dir], {
+      env: { ...process.env, PATH: `${fakeDir}:${process.env.PATH}` },
+    });
+    return JSON.parse(r.stdout) as Record<string, unknown>;
+  }
+  it('true when dbm import --help mentions --replace', async () => {
+    expect((await withFakeDbm('Usage: dbm import --replace --users-out')).dbmImportV2).toBe(true);
+  });
+  it('false when the installed dbm is older', async () => {
+    expect((await withFakeDbm('Usage: dbm import --from')).dbmImportV2).toBe(false);
   });
 });

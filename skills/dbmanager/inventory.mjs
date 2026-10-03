@@ -101,7 +101,7 @@ for (const file of walk(dir)) {
         file: rel,
         line: i + 1,
         kind: k.kind,
-        snippet: redact(line.trim()).slice(0, 100),
+        snippet: redact(line.trim()).replaceAll('`', "'").slice(0, 100),
         isClient,
       });
       files.add(rel);

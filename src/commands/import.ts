@@ -125,7 +125,8 @@ ${schemaPhase}pg_dump "$SRC" --data-only --no-owner --no-privileges ${schemaFlag
 ${replacePhase}echo '---DATA-ERRORS---'
 psql "$DST" -v ON_ERROR_STOP=0 -q -c 'SET session_replication_role = replica' -f /tmp/data.sql 2>&1 >/dev/null | grep -E 'ERROR|FATAL' || true
 echo '---COUNTS---'
-for t in $TABLES; do
+printf '%s\\n' "$TABLES" | while IFS= read -r t; do
+  [ -n "$t" ] || continue
   s=$(psql "$SRC" -Atc "select count(*) from $t" 2>/dev/null || echo '-')
   d=$(psql "$DST" -Atc "select count(*) from $t" 2>/dev/null || echo '-')
   printf '%s\\t%s\\t%s\\n' "$t" "$s" "$d"

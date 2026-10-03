@@ -79,7 +79,7 @@ Environment variables printed by `dbm env`: `DATABASE_URL` (transaction pooling,
 
 ### Migrating from Supabase
 
-Install the skill by symlinking `skills/dbmanager` into `~/.claude/skills/`. Run `/dbmanager` in the app folder; migrate mode is detected from the Supabase code. It creates the project, rehearses the import and writes `MIGRATION.md`, a checklist of what to rewrite. Work through that file, then run `/dbmanager cutover` to re-import, push the env vars and get the closing checklist. See [the migration guide](docs/migration-from-supabase.md).
+Install the skill by symlinking `skills/dbmanager` into `~/.claude/skills/`. After pulling, run `npm run build` so the global `dbm` picks up new flags. Run `/dbmanager` in the app folder; migrate mode is detected from the Supabase code. It creates the project, rehearses the import and writes `MIGRATION.md`, a checklist of what to rewrite. Work through that file, then run `/dbmanager cutover` to re-import, push the env vars and get the closing checklist. See [the migration guide](docs/migration-from-supabase.md).
 
 ## Where things live on the VPS
 

@@ -26,6 +26,10 @@ if [ -n "$DBM" ]; then
   [ -d "$DBM_ROOT/templates/nextjs" ] && TEMPLATES="$DBM_ROOT/templates/nextjs"
 fi
 
+# 2b. installed dbm new enough for this skill (import --replace)?
+DBM_V2=false
+[ -n "$DBM" ] && dbm import --help 2>/dev/null | grep -q -- '--replace' && DBM_V2=true
+
 # 3. platform configured on this machine?
 CONFIGURED=false; [ -f "$HOME/.dbm/config.json" ] && CONFIGURED=true
 
@@ -73,6 +77,7 @@ cat <<JSON
   "folder": $(jstr "$DIR"),
   "dbm": $(jstr "$DBM"),
   "dbmInstallHint": $(jstr "$INSTALL_HINT"),
+  "dbmImportV2": $DBM_V2,
   "dbmRoot": $(jstr "$DBM_ROOT"),
   "templatesDir": $(jstr "$TEMPLATES"),
   "configured": $CONFIGURED,
