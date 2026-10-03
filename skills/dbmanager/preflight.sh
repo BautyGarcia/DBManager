@@ -50,6 +50,24 @@ HAS_JQ=false; command -v jq >/dev/null && HAS_JQ=true
 HAS_VERCEL=false; command -v vercel >/dev/null && HAS_VERCEL=true
 NODE="$(node --version 2>/dev/null || echo none)"
 
+# 7. supabase detection (files whose import path mentions supabase: @supabase/* or a local client wrapper)
+SB_DETECTED=false; SB_ENV=false; SB_FILES_JSON="[]"
+if [ "$HAS_PKG" = true ] && grep -qE '"@supabase/(supabase-js|ssr)"' "$DIR/package.json"; then
+  SB_DETECTED=true
+  SB_FILES_JSON="$(cd "$DIR" && grep -rlE "from ['\"][^'\"]*supabase" --include='*.ts' --include='*.tsx' --include='*.js' --include='*.jsx' . 2>/dev/null \
+    | grep -vE '/(node_modules|\.next|dist)/' | sed 's#^\./##' | sort | head -200 \
+    | python3 -c 'import json,sys; print(json.dumps([l.rstrip("\n") for l in sys.stdin if l.strip()]))')"
+fi
+for f in "$DIR"/.env "$DIR"/.env.local "$DIR"/.env.development "$DIR"/.env.production; do
+  [ -f "$f" ] && grep -q 'SUPABASE_URL' "$f" && SB_ENV=true
+done
+
+# 8. mode
+if [ "$EMPTY" = true ]; then MODE=create
+elif [ "$IS_NEXT" = true ] && [ "$SB_DETECTED" = true ]; then MODE=migrate
+elif [ "$IS_NEXT" = true ]; then MODE=connect
+else MODE=unknown; fi
+
 cat <<JSON
 {
   "folder": $(jstr "$DIR"),
@@ -65,6 +83,8 @@ cat <<JSON
   "hasPackageJson": $HAS_PKG,
   "isNextApp": $IS_NEXT,
   "vercelLinked": $VERCEL_LINKED,
+  "mode": "$MODE",
+  "supabase": { "detected": $SB_DETECTED, "files": $SB_FILES_JSON, "envPresent": $SB_ENV },
   "hasJq": $HAS_JQ,
   "hasVercelCli": $HAS_VERCEL,
   "node": $(jstr "$NODE")

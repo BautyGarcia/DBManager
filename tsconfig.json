@@ -21,5 +21,6 @@
     "outDir": "dist",
     "noEmit": true
   },
-  "include": ["src", "test", "vitest.config.ts", "scripts/*.ts"]
+  "include": ["src", "test", "vitest.config.ts", "scripts/*.ts"],
+  "exclude": ["test/fixtures"]
 }
