@@ -84,12 +84,17 @@ describe('importScript options', () => {
     expect(s).not.toContain('---POLICIES---');
     expect(s).toContain('---DATA-ERRORS---');
   });
-  it('--replace truncates imported tables that exist in the target, except protected ones', () => {
+  it('--replace truncates in one CASCADE-free statement, excluding every protected table in any schema', () => {
     const s = importScript({ ...base, replace: true });
     expect(s).toContain('---REPLACE---');
-    expect(s).toContain('TRUNCATE TABLE $t RESTART IDENTITY CASCADE');
-    for (const p of PROTECTED_TABLES) expect(s).toContain(`public.${p}`);
-    expect(s).toContain(`to_regclass('$t') is not null`);
+    expect(s).toContain(
+      "tablename not in ('user','session','account','verification','rateLimit','__drizzle_migrations')",
+    );
+    for (const p of PROTECTED_TABLES) expect(s).toContain(`'${p}'`);
+    expect(s).toContain('TRUNCATE TABLE $REPLACE_TABLES RESTART IDENTITY"');
+    expect(s).not.toContain('CASCADE');
+    expect(s).toContain("echo '---REPLACE-FAILED---'; exit 1");
+    expect(s.indexOf('---REPLACE-FAILED---')).toBeLessThan(s.indexOf('---DATA-ERRORS---'));
   });
   it('quotes multiple schema names in the pg_tables filter', () => {
     expect(importScript({ ...base, schemas: ['public', 'app'] })).toContain(
@@ -210,6 +215,20 @@ describe('importCommand', () => {
       exitCode: 2,
       message: expect.stringContaining('pg_dump/psql failed'),
     });
+  });
+  it('fails when the script aborts with REPLACE-FAILED (no END marker)', async () => {
+    const runner = makeFakeRunner([
+      {
+        match: /bash -s/,
+        stdout:
+          '---REPLACE---\nERROR:  cannot truncate a table referenced in a foreign key\n---REPLACE-FAILED---\n',
+      },
+    ]);
+    const t = makeTestDeps({ runner });
+    t.store.state = upsertProject(t.store.state, fakeProject('my-app'));
+    await expect(
+      importCommand(t.deps, { slug: 'my-app', from: 'postgresql://u:p@h:5432/d' }),
+    ).rejects.toThrow(/REPLACE-FAILED/);
   });
   it('fails when the END marker is missing', async () => {
     const runner = makeFakeRunner([{ match: /bash -s/, stdout: '---SCHEMA-ERRORS---\n' }]);

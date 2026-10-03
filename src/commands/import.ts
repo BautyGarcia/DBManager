@@ -79,7 +79,7 @@ export function importScript(o: ImportScriptOptions): string {
   checkSchemas(o.schemas);
   const schemaFlags = o.schemas.map((s) => quote(`--schema=${s}`)).join(' ');
   const schemaIn = o.schemas.map((s) => `'${s}'`).join(','); // names validated by SCHEMA_RE
-  const protectedCase = PROTECTED_TABLES.map((t) => `public.${t}`).join('|');
+  const protectedIn = PROTECTED_TABLES.map((t) => `'${t}'`).join(','); // constants
   const schemaPhase = o.dataOnly
     ? ''
     : `pg_dump "$SRC" --schema-only --no-owner --no-privileges --no-comments --no-publications --no-subscriptions ${schemaFlags} -f /tmp/schema.sql || { echo '---DUMP-FAILED---'; exit 1; }
@@ -88,14 +88,16 @@ psql "$DST" -v ON_ERROR_STOP=0 -q -f /tmp/schema.sql 2>&1 >/dev/null | grep -E '
 echo '---POLICIES---'
 grep -E '^CREATE POLICY' /tmp/schema.sql | sed -E 's/^CREATE POLICY ("?[^" ]+"?) ON ([^ ]+).*/\\2: \\1/' || true
 `;
+  // Replace set is computed on the target in SQL: protected names are excluded in every schema
+  // (psql %I quoting makes shell pattern matching on "user"/"rateLimit" unreliable). One TRUNCATE
+  // without CASCADE: if a protected table references an imported one, Postgres refuses the whole
+  // statement and we abort before any data is loaded.
   const replacePhase = o.replace
     ? `echo '---REPLACE---'
-for t in $TABLES; do
-  case "$t" in ${protectedCase}) continue;; esac
-  if psql "$DST" -Atc "select to_regclass('$t') is not null" | grep -q t; then
-    psql "$DST" -qc "TRUNCATE TABLE $t RESTART IDENTITY CASCADE" 2>&1 | grep -E 'ERROR' || true
-  fi
-done
+REPLACE_TABLES=$(psql "$DST" -Atc "select string_agg(format('%I.%I', schemaname, tablename), ', ' order by schemaname, tablename) from pg_tables where schemaname in (${schemaIn}) and tablename not in (${protectedIn})") || { echo '---REPLACE-FAILED---'; exit 1; }
+if [ -n "$REPLACE_TABLES" ]; then
+  psql "$DST" -v ON_ERROR_STOP=1 -qc "TRUNCATE TABLE $REPLACE_TABLES RESTART IDENTITY" 2>&1 || { echo '---REPLACE-FAILED---'; exit 1; }
+fi
 `
     : '';
   return `set -u
