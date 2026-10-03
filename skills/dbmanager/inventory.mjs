@@ -2,7 +2,7 @@
 // Scan a Next.js project for supabase-js usage and write MIGRATION.md (a checklist for the rewrite).
 // Usage: node inventory.mjs <dir> [--import-json <dbm import --json output>] [--out MIGRATION.md]
 import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { isAbsolute, join, relative } from 'node:path';
 
 const args = process.argv.slice(2);
 const dir = args[0] && !args[0].startsWith('--') ? args[0] : process.cwd();
@@ -10,7 +10,8 @@ const opt = (name) => {
   const i = args.indexOf(name);
   return i >= 0 ? args[i + 1] : undefined;
 };
-const outFile = join(dir, opt('--out') ?? 'MIGRATION.md');
+const out = opt('--out') ?? 'MIGRATION.md';
+const outFile = isAbsolute(out) ? out : join(dir, out);
 const importJson = opt('--import-json');
 const report = importJson ? JSON.parse(readFileSync(importJson, 'utf8')) : null;
 
@@ -19,42 +20,54 @@ const EXT = /\.(tsx?|jsx?|mjs|cjs)$/;
 const KINDS = [
   {
     kind: 'client-init',
+    short:
+      'delete the client; import `db` from `@/lib/db` in server code, `authClient` from `@/lib/auth-client` in client code',
     re: /\b(createClient|createBrowserClient|createServerClient)\s*\(/,
     target:
       'delete; server code imports `db` from `@/lib/db`, client code imports `authClient` from `@/lib/auth-client`',
   },
   {
     kind: 'storage',
+    short:
+      'presigned URLs from `@/lib/s3`; public files via `S3_PUBLIC_BASE_URL` after `dbm storage public <slug>`',
     re: /\.storage\s*\./,
     target:
       'presigned URLs from `@/lib/s3` (`getPresignedUploadUrl` / `getPresignedDownloadUrl`); public files via `S3_PUBLIC_BASE_URL` after `dbm storage public <slug>`',
   },
   {
     kind: 'query',
+    short: 'Drizzle query in a server action or route handler; client components call the action',
     re: /(?<!\.storage)\.from\s*\(/,
     target:
       'Drizzle query inside a server action or route handler; client components call the action',
   },
   {
     kind: 'auth',
+    short:
+      'better-auth: authClient.signIn/signUp/signOut/useSession on the client; auth.api.getSession({ headers: await headers() }) on the server',
     re: /\.auth\s*\./,
     target:
       'better-auth: `authClient.signIn.email` / `signUp.email` / `signOut` / `useSession` (client); `auth.api.getSession({ headers: await headers() })` (server)',
   },
   {
     kind: 'realtime',
+    short:
+      'not provided by dbm: use polling, server-sent events, or a later LISTEN/NOTIFY bridge (decide manually)',
     re: /\.channel\s*\(|postgres_changes/,
     target:
       'not provided by dbm: polling, server-sent events, or a later LISTEN/NOTIFY bridge (decide manually)',
   },
   {
     kind: 'rpc',
+    short:
+      'call the SQL function via Drizzle sql tagged template from a server action, or move the logic to TypeScript',
     re: /\.rpc\s*\(/,
     target:
-      'call the SQL function with Drizzle `sql`select fn(...)`` from a server action, or move the logic to TypeScript',
+      'call the SQL function with Drizzle ``sql`select fn(...)` `` from a server action, or move the logic to TypeScript',
   },
   {
     kind: 'edge-function',
+    short: 'Next.js route handler or server action (manual)',
     re: /\.functions\s*\.invoke\s*\(/,
     target: 'Next.js route handler or server action (manual)',
   },
@@ -70,13 +83,17 @@ function walk(d, acc = []) {
   return acc;
 }
 
+const SECRET =
+  /eyJ[A-Za-z0-9_-]{10,}(?:\.[A-Za-z0-9_-]+){0,2}|sb_(?:secret|publishable)_[A-Za-z0-9_-]+/g;
+const redact = (t) => t.replace(SECRET, '[redacted]');
+
 const usages = [];
 const files = new Set();
 for (const file of walk(dir)) {
   const text = readFileSync(file, 'utf8');
   if (!/@supabase\//.test(text) && !/\bsupabase\b/.test(text)) continue;
   const rel = relative(dir, file);
-  const isClient = /^\s*["']use client["']/.test(text);
+  const isClient = /^(?:\uFEFF|\s|\/\/[^\n]*\n|\/\*[\s\S]*?\*\/)*["']use client["']/.test(text);
   text.split('\n').forEach((line, i) => {
     for (const k of KINDS) {
       if (!k.re.test(line)) continue;
@@ -84,7 +101,7 @@ for (const file of walk(dir)) {
         file: rel,
         line: i + 1,
         kind: k.kind,
-        snippet: line.trim().slice(0, 100),
+        snippet: redact(line.trim()).slice(0, 100),
         isClient,
       });
       files.add(rel);
@@ -122,7 +139,7 @@ md.push('## 3. Per file', '');
 for (const f of [...files].sort()) {
   md.push(`### ${f}`, '');
   for (const u of usages.filter((x) => x.file === f)) {
-    const first = KINDS.find((k) => k.kind === u.kind).target.split(';')[0];
+    const first = KINDS.find((k) => k.kind === u.kind).short;
     md.push(`- [ ] L${u.line} \`${u.kind}\` -> ${first}  \n  \`${u.snippet}\``);
   }
   md.push('');
