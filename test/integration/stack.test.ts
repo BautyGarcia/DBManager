@@ -15,6 +15,7 @@ import { makeGarageAdmin } from '../../src/adapters/garage.js';
 import { makePostgresAdmin } from '../../src/adapters/postgres.js';
 import { restoreScript } from '../../src/commands/backup.js';
 import { emptyBucket } from '../../src/commands/destroy.js';
+import { importScript, PROTECTED_TABLES, parseImportOutput } from '../../src/commands/import.js';
 import { renderPgbouncerIni, renderUserlist } from '../../src/core/pgbouncer.js';
 import { scramSha256Verifier } from '../../src/core/scram.js';
 import { createDatabaseSql, createRoleSql, extensionsSql } from '../../src/core/sql.js';
@@ -390,5 +391,77 @@ describe('destroy --purge-storage emptyBucket (C1)', () => {
     await garage.deleteBucket(b.id);
     expect(await garage.getBucket({ id: b.id })).toBeUndefined();
     await garage.deleteKey(k.accessKeyId);
+  });
+});
+
+describe('import (rehearsal, then cutover --data-only --replace)', () => {
+  const SRC = 'postgresql://test_admin:adminpw@dbm-test-pg:5432/src_db';
+  const DST = `postgresql://my_app_app:${encodeURIComponent(APP_PW)}@dbm-test-pg:5432/my_app`;
+  async function runImport(opts: { dataOnly?: boolean; replace?: boolean }) {
+    const r = await testRunner.run(
+      ['docker', 'run', '--rm', '-i', '--network', 'dbmtest', 'postgres:18', 'bash', '-s'],
+      {
+        input: importScript({ src: SRC, dst: DST, schemas: ['public'], ...opts }),
+        timeoutMs: 180_000,
+      },
+    );
+    expect(r.stdout, r.stdout).toContain('---END---');
+    return parseImportOutput(r.stdout);
+  }
+  beforeAll(async () => {
+    await pgAdmin.runSql(admin, `DROP DATABASE IF EXISTS src_db; CREATE DATABASE src_db;`);
+    await pgAdmin.runSql(
+      { ...admin, database: 'src_db' },
+      `
+      CREATE TABLE items (id serial PRIMARY KEY, name text NOT NULL);
+      CREATE TABLE profiles (id uuid PRIMARY KEY DEFAULT gen_random_uuid(), display_name text);
+      ALTER TABLE items ENABLE ROW LEVEL SECURITY;
+      CREATE POLICY items_owner ON items USING (true);
+      INSERT INTO items (name) VALUES ('a'), ('b'), ('c');
+      INSERT INTO profiles (display_name) VALUES ('p1');`,
+    );
+    // the app role needs the same grant create.ts gives in production
+    await pgAdmin.runSql(admin, `GRANT SET ON PARAMETER session_replication_role TO my_app_app;`);
+    // better-auth-like table that must survive --replace
+    await pgAdmin.runSql(
+      { ...admin, database: 'my_app' },
+      `
+      DROP TABLE IF EXISTS "user"; CREATE TABLE "user" (id text PRIMARY KEY, email text);
+      ALTER TABLE "user" OWNER TO my_app_app;
+      INSERT INTO "user" VALUES ('u1', 'keep@me.test');
+      DROP TABLE IF EXISTS items; DROP TABLE IF EXISTS profiles;`,
+    );
+  });
+
+  it('rehearsal: schema + data land, policies are reported, counts match', async () => {
+    const r = await runImport({});
+    expect(r.policies).toEqual(['public.items: items_owner']);
+    expect(r.counts).toEqual(
+      expect.arrayContaining([
+        { table: 'public.items', source: 3, target: 3 },
+        { table: 'public.profiles', source: 1, target: 1 },
+      ]),
+    );
+  });
+
+  it('cutover: --data-only --replace reloads changed data without duplicates and keeps "user" rows', async () => {
+    await pgAdmin.runSql(
+      { ...admin, database: 'src_db' },
+      `INSERT INTO items (name) VALUES ('d'); DELETE FROM profiles;`,
+    );
+    const r = await runImport({ dataOnly: true, replace: true });
+    expect(r.policies).toEqual([]);
+    expect(r.counts).toEqual(
+      expect.arrayContaining([
+        { table: 'public.items', source: 4, target: 4 },
+        { table: 'public.profiles', source: 0, target: 0 },
+      ]),
+    );
+    const users = await pgAdmin.runSql(
+      { ...admin, database: 'my_app' },
+      `select count(*) from "user";`,
+    );
+    expect(users.trim()).toBe('1');
+    expect(PROTECTED_TABLES).toContain('user');
   });
 });
