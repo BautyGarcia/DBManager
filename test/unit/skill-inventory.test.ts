@@ -50,6 +50,11 @@ describe('skills/dbmanager/inventory.mjs', () => {
     expect(md).toContain('posts_owner');
     expect(md).toContain('relation "auth.users" does not exist');
     expect(md).not.toContain('node_modules');
+    expect(md).toContain('- [ ] Foreign keys to `auth.users(id)`');
+    expect(md).not.toMatch(/- \[ \] .*npm rm/);
+    expect(md).not.toMatch(/- \[ \] .*SUPABASE_\*/);
+    expect(md).not.toMatch(/- \[ \] .*auth\.identities/);
+    expect(md).toContain('- `npm rm @supabase/supabase-js @supabase/ssr`');
   });
 
   it('works without --import-json', async () => {
