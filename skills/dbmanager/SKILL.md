@@ -40,7 +40,7 @@ bash ~/.claude/skills/dbmanager/preflight.sh "$PWD"
    ```bash
    npx --yes create-next-app@latest . --ts --app --no-tailwind --no-eslint --no-src-dir --import-alias "@/*" --use-npm --yes
    ```
-   Flags are fixed. No commits.
+   Fixed flags. No commits.
 4. **Provision**: `dbm create <slug> --json > .dbm-create.json` (secrets; never print it). Exit 1 with status `provisioning`: STOP; user runs `dbm destroy <slug>`.
 5. **`.env.local`**. No `.env.local` yet:
    ```bash
@@ -107,20 +107,20 @@ bash ~/.claude/skills/dbmanager/preflight.sh "$PWD"
 
 Supabase stays live, read-only. Write only the skill's files (`lib/*.ts` templates, `drizzle.config.ts`, `scripts/`, the bcrypt hook in `lib/auth.ts`); never edit application code.
 
-1. **State check**. `MIGRATION.md` exists: STOP "This app was already rehearsed. Run /dbmanager cutover, or start over (step 1 text below)." `.dbm-rehearsal` exists (an earlier rehearsal stopped before hand-off): read the slug from it, require `dbm list --json | jq -e '.[] | select(.slug=="<slug>" and .status=="running")' >/dev/null` (else start over), then **resume**: steps 2-3, §2 steps 6-9 (idempotent) and the db-host grep, then step 5. Start over = "`dbm destroy <slug>` (operator); `rm -f MIGRATION.md .dbm-rehearsal`; delete the dbm and `# pre-dbm` lines from .env.local; then /dbmanager."
+1. **State check**. `MIGRATION.md` exists: STOP "This app was already rehearsed. Run /dbmanager cutover, or start over (step 1 text below)." `.dbm-rehearsal` exists (a rehearsal stopped before hand-off): read the slug from it, require `dbm list --json | jq -e '.[] | select(.slug=="<slug>" and .status=="running")' >/dev/null` (else start over), then **resume**: steps 2-3, the `.gitignore` loop and `chmod` of §2.5, §2 steps 6-9 (idempotent) and the db-host grep, then step 5. Start over = "`dbm destroy <slug>` (operator); `rm -f MIGRATION.md .dbm-rehearsal`; delete the dbm and `# pre-dbm` lines from .env.local; then /dbmanager."
 2. **Storage check**: `grep -rlF '.storage.' --exclude-dir={node_modules,.next} --include='*.[jt]s' --include='*.[jt]sx' .`. If it matches, list bucket names: `grep -rhoE "storage\.from\(['\"][^'\"]+['\"]\)" --exclude-dir={node_modules,.next} --include='*.[jt]s' --include='*.[jt]sx' . | sort -u`.
-3. **Ask once, in one message**: "Paste your Supabase **Session pooler** connection string (Dashboard > Connect > Session pooler, port 5432, never 6543; the direct host is IPv6-only)." Only if step 2 matched, add: "and the Storage S3 endpoint, region, access key id and secret (Settings > Storage > S3). I found buckets: <names>. Confirm which to copy and name any missing; each lands under `<bucket>/`." Say: "Used once, never shown back."
-4. Run §2 steps 2, 4-9 (append mode in step 5), then the db-host grep of step 11. If `.dbm-create.json` has `"existed": true`: `rm -f .dbm-create.json`, STOP "Project <slug> already exists on dbm but this folder was never rehearsed: pick another slug or have the operator run `dbm destroy <slug>`." After step 4 succeeds: `echo <slug> > .dbm-rehearsal`. No Vercel until cutover.
+3. **Ask once, in one message**: "Paste your Supabase **Session pooler** connection string (Dashboard > Connect > Session pooler, port 5432, never 6543; the direct host is IPv6-only)." Only if step 2 matched, add: "and the Storage S3 endpoint, region, access key id and secret (Settings > Storage > S3). I found buckets: <names>. Confirm which to copy, name any missing; each lands under `<bucket>/`." Say: "Used once, never shown back."
+4. Run §2 step 2, then §2 step 4. Before §2 step 5: if `jq -e '.existed' .dbm-create.json` succeeds, `rm -f .dbm-create.json` and STOP "Project <slug> already exists on dbm but this folder was never rehearsed: pick another slug or have the operator run `dbm destroy <slug>`." Otherwise `echo <slug> > .dbm-rehearsal`, then §2 steps 5-9 (append mode in step 5) and the db-host grep of step 11. No Vercel until cutover.
 5. **Import** (secrets only here; never repeat the command or its output in prose):
    ```bash
    dbm import <slug> --from "<url>" [--storage-endpoint <e> --storage-region <r> --storage-key <id> --storage-secret <s> --storage-bucket <a> --storage-bucket <b>] --users-out .dbm-users.csv --json > .dbm-import.json
    ```
-   One `--storage-bucket` per bucket. Non-zero exit: `rm -f .dbm-import.json .dbm-users.csv`, report the one-line error without URLs, STOP. A connection error: re-running /dbmanager resumes at step 2. An rclone/storage error: the database part already loaded, so start over (step 1 text).
+   One `--storage-bucket` per bucket. Non-zero exit: `rm -f .dbm-import.json .dbm-users.csv`, report the one-line error without URLs, STOP. Connection error: re-running /dbmanager resumes at step 2. rclone/storage error: data already loaded, so start over (step 1 text).
 6. **Inventory**:
    ```bash
    node ~/.claude/skills/dbmanager/inventory.mjs . --import-json .dbm-import.json && rm -f .dbm-import.json
    ```
-   Keep its `MIGRATION.md: ...` line.
+   Keep the `MIGRATION.md: ...` line.
 7. **Users**: ask "Preserve existing accounts (passwords keep working) or have users re-register?"
    - Preserve:
      ```bash
