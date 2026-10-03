@@ -8,7 +8,7 @@ Nothing here modifies the Supabase project. Keep it running until the new deploy
 
 Install the skill once by symlinking `skills/dbmanager` into `~/.claude/skills/`. Then, in the app folder, run two commands.
 
-1. `/dbmanager` detects Supabase code and runs migrate mode, a rehearsal. It creates the dbm project, wires the templates, and runs `dbm import` with `--users-out` (and one storage bucket if you gave S3 details). Supabase stays live and read-only. It then writes `MIGRATION.md`, an inventory of Supabase usages, RLS policies and import errors, as `- [ ]` items. It also asks whether to preserve user accounts.
+1. `/dbmanager` detects Supabase code and runs migrate mode, a rehearsal. It creates the dbm project, wires the templates, and runs `dbm import` with `--users-out` (and your storage buckets if you gave S3 details, each under its own prefix). Supabase stays live and read-only. It then writes `MIGRATION.md`, an inventory of Supabase usages, RLS policies and import errors, as `- [ ]` items. It also asks whether to preserve user accounts.
 2. Rewrite the app per `MIGRATION.md` with your usual development skills. Check items off or delete them.
 3. `/dbmanager cutover` refuses to run while any `- [ ]` is left. It takes `dbm backup <slug>` as the rollback point, re-imports with `--data-only --replace`, checks that every table count matches, loads users if you preserved them, and pushes the env vars to Vercel. It ends with the closing checklist (see [Deploy and verify](#4-deploy-and-verify)).
 
@@ -28,8 +28,8 @@ Keep the printed `DATABASE_URL`; you will also want the env block in `.env.local
 
 Get a source URL from Supabase Dashboard, Connect:
 
-- The **direct** connection (`postgresql://postgres:<PW>@db.<REF>.supabase.co:5432/postgres`). It is IPv6-only unless the IPv4 add-on is enabled, and whether your VPS has IPv6 egress depends on the provider.
-- Otherwise the **session pooler** on port 5432 (`postgres.<REF>@aws-N-<region>.pooler.supabase.com`).
+- Prefer the **session pooler** on port 5432 (`postgres.<REF>@aws-N-<region>.pooler.supabase.com`). It is reachable over IPv4 and `pg_dump` works through it.
+- The **direct** connection (`postgresql://postgres:<PW>@db.<REF>.supabase.co:5432/postgres`) is IPv6-only unless the IPv4 add-on is enabled; most VPSes cannot reach it ("Network is unreachable").
 - Never the transaction pooler (port 6543): `pg_dump` does not work through it.
 
 Enable the S3 protocol and create an access key in Dashboard, Project Settings, Storage, S3 Connection. **Supabase S3 keys bypass RLS and grant full access to every bucket. Treat them like the database password: never commit them, and delete them in Supabase once the migration is done.**
@@ -42,10 +42,10 @@ dbm import <slug> \
   --storage-region <project-region> \
   --storage-key <access-key-id> \
   --storage-secret <secret> \
-  --storage-bucket <bucket>
+  --storage-bucket <bucket-a> --storage-bucket <bucket-b>
 ```
 
-`--schemas` defaults to `public`; pass a comma-separated list for other user-owned schemas. The storage flags are optional and copy one bucket at a time into the project's bucket (rerun for more buckets; the target bucket is the project's own, so use key prefixes if you merge several).
+`--schemas` defaults to `public`; pass a comma-separated list for other user-owned schemas. The storage flags are optional. `--storage-bucket` is repeatable: each source bucket is copied into the project's single bucket under its own `<bucket>/` prefix, so `storage.from('avatars')` with key `x.png` becomes key `avatars/x.png` in `S3_BUCKET`, and names from different buckets never collide. Visibility is per project bucket (`dbm storage public <slug>`), not per prefix.
 
 What it does, in order: `pg_dump --schema-only --no-owner --no-privileges --no-comments --no-publications --no-subscriptions`, then `pg_dump --data-only --no-owner --no-privileges`; restores the schema with `psql -v ON_ERROR_STOP=0` as the app role, then the data with `SET session_replication_role = replica` so foreign-key and trigger order does not matter; collects stderr from both; copies storage with `rclone copy --size-only` (Supabase S3 does not support Content-MD5 or ETag checksums). It is a copy, not a sync: objects already in the project's bucket are never deleted, so re-running an import or merging several source buckets is safe.
 
@@ -73,7 +73,7 @@ Take `dbm backup <slug>` before a `--replace` run. It is your rollback point.
 
 Caveat: a source table named like a protected table (`user`, `session`, `account`, `verification`, `rateLimit`, `__drizzle_migrations`) collides with the better-auth one. The schema import reports "already exists" and the data load copies its rows into the existing table. With `--replace` that table is never truncated, so at cutover its rows are loaded on top, fail as duplicates, and the table shows MISMATCH every time. Rename or drop it in the source before importing, or expect to clean it up afterwards.
 
-`--storage-bucket` copies one bucket per run.
+`--storage-bucket` may be repeated; each bucket is copied under its own prefix and re-copies are idempotent (`rclone copy --size-only`).
 
 ### Counts and policies in the report
 
@@ -121,7 +121,7 @@ Storage by hand (Supabase to Garage):
 ```bash
 rclone copy \
   ":s3,provider=Other,endpoint=https://<REF>.storage.supabase.co/storage/v1/s3,region=<project_region>,force_path_style=true,access_key_id=$SB_KEY,secret_access_key=$SB_SECRET:<bucket>" \
-  ":s3,provider=Other,endpoint=https://s3.<domain>,region=garage,force_path_style=true,access_key_id=$S3_ACCESS_KEY_ID,secret_access_key=$S3_SECRET_ACCESS_KEY:<slug>" \
+  ":s3,provider=Other,endpoint=https://s3.<domain>,region=garage,force_path_style=true,access_key_id=$S3_ACCESS_KEY_ID,secret_access_key=$S3_SECRET_ACCESS_KEY:<slug>/<bucket>" \
   --checksum=false --size-only
 ```
 

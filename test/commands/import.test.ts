@@ -154,8 +154,15 @@ describe('importCommand', () => {
           '---SCHEMA-ERRORS---\npsql:x: ERROR:  relation "auth.users" does not exist\n---DATA-ERRORS---\n---END---',
       },
       {
-        match: /rclone\/rclone:1 --config \/dev\/stdin copy src:avatars dst:my-app --size-only/,
+        match:
+          /rclone\/rclone:1 --config \/dev\/stdin copy src:avatars dst:my-app\/avatars --size-only/,
         stdout: '',
+        once: true,
+      },
+      {
+        match: /rclone\/rclone:1 --config \/dev\/stdin copy src:docs dst:my-app\/docs --size-only/,
+        stdout: '',
+        once: true,
       },
     ]);
     const t = makeTestDeps({ runner });
@@ -168,15 +175,24 @@ describe('importCommand', () => {
         region: 'us-east-1',
         keyId: 'K',
         keySecret: 'S',
-        bucket: 'avatars',
+        buckets: ['avatars', 'docs'],
       },
     });
     expect(r.errors.authUsers).toHaveLength(1);
     expect(r.storageSynced).toBe(true);
-    const rc = t.runner.calls.find((c) => c.argv.includes('rclone/rclone:1'));
-    // copy, never sync: objects already in the target bucket must survive an import
-    expect(rc?.argv).toContain('copy');
-    expect(rc?.argv).not.toContain('sync');
+    expect(r.storageBuckets).toEqual(['avatars', 'docs']);
+    const rcs = t.runner.calls.filter((c) => c.argv.includes('rclone/rclone:1'));
+    // one copy per bucket, each under its own prefix so keys never collide
+    expect(rcs.map((c) => c.argv[c.argv.indexOf('copy') + 2])).toEqual([
+      'dst:my-app/avatars',
+      'dst:my-app/docs',
+    ]);
+    for (const rc of rcs) {
+      // copy, never sync: objects already in the target bucket must survive an import
+      expect(rc.argv).toContain('copy');
+      expect(rc.argv).not.toContain('sync');
+    }
+    expect(formatReport(r)).toContain('storage copied: avatars, docs');
     const dump = t.runner.calls.find((c) => c.argv.join(' ').includes('bash -s'));
     expect(dump?.argv.join(' ')).not.toContain('pw@');
     expect(dump?.input).toContain('db.ref.supabase.co');
@@ -199,9 +215,29 @@ describe('importCommand', () => {
       importCommand(t.deps, {
         slug: 'my-app',
         from: 'postgresql://u:p@db.x.supabase.co:5432/postgres',
-        storage: { endpoint: 'ftp://x', region: 'r', keyId: 'K', keySecret: 'S', bucket: 'b' },
+        storage: { endpoint: 'ftp://x', region: 'r', keyId: 'K', keySecret: 'S', buckets: ['b'] },
       }),
     ).rejects.toThrow(/endpoint/);
+  });
+  it('rejects bucket names that would change the rclone path', async () => {
+    const t = makeTestDeps();
+    t.store.state = upsertProject(t.store.state, fakeProject('my-app'));
+    for (const bad of ['a/b', '../x', '', 'with space', '-dash']) {
+      await expect(
+        importCommand(t.deps, {
+          slug: 'my-app',
+          from: 'postgresql://u:p@db.x.supabase.co:5432/postgres',
+          storage: {
+            endpoint: 'https://x',
+            region: 'r',
+            keyId: 'K',
+            keySecret: 'S',
+            buckets: [bad],
+          },
+        }),
+      ).rejects.toMatchObject({ exitCode: 1, step: 'import.storage' });
+    }
+    expect(t.runner.calls).toHaveLength(0);
   });
   it('keeps Supabase storage keys out of rclone argv', async () => {
     const runner = makeFakeRunner([
@@ -212,7 +248,7 @@ describe('importCommand', () => {
     await importCommand(t.deps, {
       slug: 'my-app',
       from: 'postgresql://u:p@db.x.supabase.co:5432/postgres',
-      storage: { endpoint: 'https://x', region: 'r', keyId: 'K', keySecret: 'S', bucket: 'b' },
+      storage: { endpoint: 'https://x', region: 'r', keyId: 'K', keySecret: 'S', buckets: ['b'] },
     });
     const call = t.runner.calls.find((c) => c.argv.join(' ').includes('rclone'));
     expect(call?.argv).not.toContain('K');

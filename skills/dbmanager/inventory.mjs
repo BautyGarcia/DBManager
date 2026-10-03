@@ -157,6 +157,12 @@ if (!report) {
   for (const e of importErrors) md.push(`- [ ] ${e}`);
   if (report.mismatched?.length)
     md.push('', `**Count mismatches:** ${report.mismatched.join(', ')}`);
+  if (report.storageBuckets?.length) {
+    md.push(
+      '',
+      `**Storage:** buckets ${report.storageBuckets.join(', ')} were copied under their own prefix in \`S3_BUCKET\`: \`from('<bucket>')\` + key -> \`<bucket>/<key>\`.`,
+    );
+  }
   if (report.usersExported != null) {
     md.push(
       '',

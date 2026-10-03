@@ -15,7 +15,8 @@ export interface ImportOptions {
     region: string;
     keyId: string;
     keySecret: string;
-    bucket: string;
+    /** Source buckets; each is copied under its own `<bucket>/` prefix in the project's bucket. */
+    buckets: string[];
   };
   dataOnly?: boolean;
   replace?: boolean;
@@ -35,6 +36,8 @@ export interface ImportReport {
     other: string[];
   };
   storageSynced: boolean;
+  /** Source buckets copied, in order; each lives under `<bucket>/` in the project's bucket. */
+  storageBuckets: string[];
   counts: ImportCount[];
   rlsPolicies: string[];
   usersExported: number | null;
@@ -64,6 +67,8 @@ export function classifyErrors(stderr: string): ImportReport['errors'] {
 }
 
 const SCHEMA_RE = /^[a-z_][a-z0-9_]*$/;
+/** Supabase bucket names that are safe as an rclone path segment and an S3 key prefix. */
+const BUCKET_RE = /^[a-z0-9][a-z0-9._-]{0,62}$/i;
 
 function checkSchemas(schemas: string[]): void {
   for (const s of schemas) {
@@ -211,6 +216,19 @@ export async function importCommand(deps: Deps, o: ImportOptions): Promise<Impor
       `${o.slug} has no storage bucket (created with --no-storage)`,
       'import.storage',
     );
+  if (o.storage) {
+    if (o.storage.buckets.length === 0)
+      throw userError(
+        'at least one --storage-bucket is required with storage flags',
+        'import.storage',
+      );
+    for (const b of o.storage.buckets)
+      if (!BUCKET_RE.test(b))
+        throw userError(
+          `invalid bucket name "${b}" (letters, digits, . _ - only; must start with a letter or digit)`,
+          'import.storage',
+        );
+  }
   if (o.replace)
     await requireConfirmation(
       deps,
@@ -269,30 +287,35 @@ export async function importCommand(deps: Deps, o: ImportOptions): Promise<Impor
     .map((c) => c.table);
 
   let storageSynced = false;
+  const storageBuckets: string[] = [];
   if (o.storage && p.storage) {
-    // `copy`, never `sync`: an import must not delete objects already in the target bucket.
-    deps.io.err(`copying storage bucket ${o.storage.bucket} -> ${p.storage.bucket}...\n`);
     const conf = `[src]\ntype = s3\nprovider = Other\nenv_auth = false\naccess_key_id = ${o.storage.keyId}\nsecret_access_key = ${o.storage.keySecret}\nendpoint = ${o.storage.endpoint}\nregion = ${o.storage.region}\nforce_path_style = true\n\n[dst]\ntype = s3\nprovider = Other\nenv_auth = false\naccess_key_id = ${p.storage.keyId}\nsecret_access_key = ${p.storage.keySecret}\nendpoint = http://${deps.cfg.remote.garageContainer}:3900\nregion = garage\nforce_path_style = true\nno_check_bucket = true\n`;
-    await deps.ssh.run(
-      [
-        'docker',
-        'run',
-        '--rm',
-        '-i',
-        '--network',
-        deps.cfg.remote.dockerNetwork,
-        IMAGES.rclone,
-        '--config',
-        '/dev/stdin',
-        'copy',
-        `src:${o.storage.bucket}`,
-        `dst:${p.storage.bucket}`,
-        '--size-only',
-        '--transfers',
-        '4',
-      ],
-      { input: conf, timeoutMs: 6 * 60 * 60_000 },
-    );
+    for (const bucket of o.storage.buckets) {
+      // `copy`, never `sync`: an import must not delete objects already in the target bucket.
+      // Each source bucket lands under its own prefix, so `from('<bucket>')` + key -> `<bucket>/<key>`.
+      deps.io.err(`copying storage bucket ${bucket} -> ${p.storage.bucket}/${bucket}/...\n`);
+      await deps.ssh.run(
+        [
+          'docker',
+          'run',
+          '--rm',
+          '-i',
+          '--network',
+          deps.cfg.remote.dockerNetwork,
+          IMAGES.rclone,
+          '--config',
+          '/dev/stdin',
+          'copy',
+          `src:${bucket}`,
+          `dst:${p.storage.bucket}/${bucket}`,
+          '--size-only',
+          '--transfers',
+          '4',
+        ],
+        { input: conf, timeoutMs: 6 * 60 * 60_000 },
+      );
+      storageBuckets.push(bucket);
+    }
     storageSynced = true;
   }
 
@@ -335,6 +358,7 @@ export async function importCommand(deps: Deps, o: ImportOptions): Promise<Impor
     schemas,
     errors,
     storageSynced,
+    storageBuckets,
     counts: parsed.counts,
     rlsPolicies: parsed.policies,
     usersExported,
@@ -365,7 +389,7 @@ export function formatReport(r: ImportReport): string {
       ? `\n${title} (${lines.length})\n  hint: ${hint}\n${lines.map((l) => `  ${l}`).join('\n')}\n`
       : '';
   return [
-    `import into ${r.slug}: schemas ${r.schemas.join(', ')}${r.storageSynced ? ', storage copied' : ''}`,
+    `import into ${r.slug}: schemas ${r.schemas.join(', ')}${r.storageSynced ? `, storage copied: ${r.storageBuckets.join(', ')}` : ''}`,
     sec(
       'Foreign keys / references to auth.users',
       r.errors.authUsers,

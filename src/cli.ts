@@ -200,7 +200,12 @@ export function buildProgram(io: Io, depsFactory: DepsFactory = defaultDepsFacto
     .option('--storage-region <region>')
     .option('--storage-key <id>')
     .option('--storage-secret <secret>')
-    .option('--storage-bucket <name>')
+    .option(
+      '--storage-bucket <name>',
+      'source bucket to copy under <name>/ in the project bucket (repeatable)',
+      (v: string, prev: string[]) => [...prev, v],
+      [] as string[],
+    )
     .option(
       '--data-only',
       'skip schema; load data only (rehearsal already created the schema)',
@@ -219,21 +224,26 @@ export function buildProgram(io: Io, depsFactory: DepsFactory = defaultDepsFacto
     .action(async function (
       this: Command,
       slug: string,
-      opts: Record<string, string | undefined> & { dataOnly?: boolean; replace?: boolean },
+      opts: Record<string, string | undefined> & {
+        dataOnly?: boolean;
+        replace?: boolean;
+        storageBucket?: string[];
+      },
     ) {
       const g = globals(this);
+      const buckets = opts.storageBucket ?? [];
       const storage =
         opts.storageEndpoint &&
         opts.storageRegion &&
         opts.storageKey &&
         opts.storageSecret &&
-        opts.storageBucket
+        buckets.length > 0
           ? {
               endpoint: opts.storageEndpoint,
               region: opts.storageRegion,
               keyId: opts.storageKey,
               keySecret: opts.storageSecret,
-              bucket: opts.storageBucket,
+              buckets,
             }
           : undefined;
       const r = await withDeps((deps) =>

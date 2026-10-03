@@ -70,7 +70,7 @@ Paste the printed variables into `.env.local` and into Vercel (`vercel env add N
 | `dbm psql <slug>` | Interactive psql in the container; `--admin` for the superuser |
 | `dbm storage public <slug>` | Serve the bucket on `<slug>.web.<domain>`; `--domain <host>` adds a vanity host, `--off` reverses |
 | `dbm storage cors <slug> --origin <origin...>` | Set allowed browser origins |
-| `dbm import <slug> --from <url>` | Import a Supabase or other Postgres database, optionally with storage (`--schemas`, `--storage-*`, `--data-only`, `--replace`, `--users-out <file>`); see [the migration guide](docs/migration-from-supabase.md) |
+| `dbm import <slug> --from <url>` | Import a Supabase or other Postgres database, optionally with storage buckets, each under its own prefix (`--schemas`, `--storage-*` with repeatable `--storage-bucket`, `--data-only`, `--replace`, `--users-out <file>`); see [the migration guide](docs/migration-from-supabase.md) |
 | `dbm doctor` | Check versions, drift, TLS, backups, disk; exits 2 on failure |
 
 A hidden maintenance command, `dbm sync-pgbouncer`, re-renders the PgBouncer files from state and reloads PgBouncer.

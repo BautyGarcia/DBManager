@@ -22,6 +22,7 @@ describe('skills/dbmanager/inventory.mjs', () => {
           other: [],
         },
         storageSynced: true,
+        storageBuckets: ['avatars', 'docs'],
         counts: [{ table: 'public.posts', source: 10, target: 10 }],
         rlsPolicies: ['public.posts: posts_owner'],
         usersExported: 3,
@@ -49,6 +50,7 @@ describe('skills/dbmanager/inventory.mjs', () => {
     expect(sec2).not.toContain('app/actions.ts');
     expect(md).toContain('posts_owner');
     expect(md).toContain('relation "auth.users" does not exist');
+    expect(md).toContain('buckets avatars, docs were copied under their own prefix');
     expect(md).not.toContain('node_modules');
     expect(md).toContain('- [ ] Foreign keys to `auth.users(id)`');
     expect(md).not.toMatch(/- \[ \] .*npm rm/);

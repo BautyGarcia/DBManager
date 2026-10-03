@@ -5,7 +5,7 @@ description: Use when the user wants to start building a new app or MVP, says "/
 
 # dbmanager: provision an app on the operator's dbm platform
 
-`dbm` is the operator's CLI for their self-hosted platform (Postgres, better-auth, Garage S3, backups). This skill wires a folder to a dbm project and stops. Features and the Supabase rewrite belong to the user's own skills.
+`dbm` is the operator's CLI for their self-hosted platform (Postgres, better-auth, Garage S3, backups). This skill wires a folder to a dbm project and stops; features and the Supabase rewrite belong to the user's own skills.
 
 | Mode | Folder | Recipe |
 |---|---|---|
@@ -30,7 +30,7 @@ bash ~/.claude/skills/dbmanager/preflight.sh "$PWD"
 | `mode` = `unknown` | STOP: non-Next project; ask what to do |
 | `hasJq` | `brew install jq` |
 
-`mode` picks the recipe; a typed `/dbmanager cutover` makes it `cutover` (preflight saying `migrate` then is normal). Keep `dbmRoot`.
+`mode` picks the recipe; a typed `/dbmanager cutover` makes it `cutover` (preflight saying `migrate` is then normal). Keep `dbmRoot`.
 
 ## 2. create / connect
 
@@ -107,15 +107,15 @@ bash ~/.claude/skills/dbmanager/preflight.sh "$PWD"
 
 Supabase stays live, read-only. Write the skill's files (`lib/*.ts` templates, `drizzle.config.ts`, `scripts/`), including the bcrypt hook in `lib/auth.ts`; never edit application code (components, routes, `lib/supabase.ts`).
 
-1. **Already rehearsed?** If `MIGRATION.md` exists, STOP (same if `dbm create` returns `"existed": true`, after `rm -f .dbm-create.json`): "This app was already rehearsed (MIGRATION.md exists) or its dbm project already exists. With MIGRATION.md: run /dbmanager cutover. Otherwise, or to start over: `dbm destroy <slug>` (operator), delete MIGRATION.md if present, then /dbmanager."
+1. **Already rehearsed?** If `MIGRATION.md` exists, STOP: "This app was already rehearsed. Run /dbmanager cutover, or to start over: `dbm destroy <slug>` (operator), delete MIGRATION.md, then /dbmanager." If `.env.local` already has a `DATABASE_URL_SESSION` line but no `MIGRATION.md`, an earlier rehearsal stopped at the import: **resume** at step 2 (skip step 4).
 2. **Storage check**: `grep -rlF '.storage.' --exclude-dir={node_modules,.next} --include='*.[jt]s' --include='*.[jt]sx' .`. If it matches, list bucket names: `grep -rhoE "storage\.from\(['\"][^'\"]+['\"]\)" --exclude-dir={node_modules,.next} --include='*.[jt]s' --include='*.[jt]sx' . | sort -u`.
-3. **Ask once, in one message**: "Paste your Supabase connection string: direct or session pooler (Dashboard > Connect, port 5432, never 6543)." Only if step 2 matched, add: "and the Storage S3 endpoint, region, access key id and secret (Settings > Storage > S3). I found bucket(s): <names>. Confirm which to copy (one per rehearsal)." Say: "Used once, never shown back." Exception: direct host unreachable (IPv6-only): ask for the session-pooler URL; the retry happens at step 5 when the connection to the direct host fails.
+3. **Ask once, in one message**: "Paste your Supabase **Session pooler** connection string (Dashboard > Connect > Session pooler, port 5432, never 6543; the direct host is IPv6-only)." Only if step 2 matched, add: "and the Storage S3 endpoint, region, access key id and secret (Settings > Storage > S3). I found buckets: <names>. Confirm which to copy; each lands under `<bucket>/`." Say: "Used once, never shown back." 
 4. Run §2 steps 2, 4-9 (append mode in step 5), then the db-host grep of step 11. No Vercel until cutover.
 5. **Import** (secrets only here; never repeat the command or its output in prose):
    ```bash
-   dbm import <slug> --from "<url>" [--storage-endpoint <e> --storage-region <r> --storage-key <id> --storage-secret <s> --storage-bucket <b>] --users-out .dbm-users.csv --json > .dbm-import.json
+   dbm import <slug> --from "<url>" [--storage-endpoint <e> --storage-region <r> --storage-key <id> --storage-secret <s> --storage-bucket <a> --storage-bucket <b>] --users-out .dbm-users.csv --json > .dbm-import.json
    ```
-   Any other non-zero exit (after the step-3 pooler retry): `rm -f .dbm-import.json .dbm-users.csv`, report the one-line error without URLs, STOP.
+   One `--storage-bucket` per bucket. Non-zero exit: `rm -f .dbm-import.json .dbm-users.csv`, report the one-line error without URLs, STOP (re-running /dbmanager resumes at step 2).
 6. **Inventory**:
    ```bash
    node ~/.claude/skills/dbmanager/inventory.mjs . --import-json .dbm-import.json && rm -f .dbm-import.json
@@ -132,7 +132,7 @@ Supabase stays live, read-only. Write the skill's files (`lib/*.ts` templates, `
    - Both: `rm -f .dbm-users.csv`.
 8. **Hand off** (no tsc gate: old Supabase code still compiles; `MIGRATION.md` is the gate). End with the §2.11 summary with `- Storage (dbm): bucket <slug>; presigned helpers in lib/s3.ts`, `- Vercel: untouched until cutover`, and its `Next:` line replaced by:
    ```
-   - Supabase: data copied (rehearsal); storage bucket <name> copied | not used; users preserved | re-register
+   - Supabase: data copied (rehearsal); storage buckets <a, b> copied under <bucket>/ prefixes | not used; users preserved | re-register
    - MIGRATION.md: N usages in F files, P policies, E import errors
    Rewrite per MIGRATION.md with your development skills (imported tables are not in lib/schema.ts yet; add them before db:push). When no `- [ ]` is left in MIGRATION.md: /dbmanager cutover
    ```
@@ -144,9 +144,9 @@ Supabase stays live, read-only. Write the skill's files (`lib/*.ts` templates, `
    - `dbm list --json | jq -e '.[] | select(.slug=="<slug>" and .status=="running")' >/dev/null` or say "Project <slug> is not running (dbm list): resume it first."
    - `MIGRATION.md` exists or say "No MIGRATION.md here: run /dbmanager first (migrate mode)."
    - Unchecked = lines matching `^- \[ \]` (checked or deleted lines are done). N = `grep -c '^- \[ \]' MIGRATION.md`; if N > 0, print `grep '^- \[ \]' MIGRATION.md` and say "Cutover blocked: MIGRATION.md has N unchecked items (listed above). Finish them with your development skills, then run /dbmanager cutover again. Nothing changed."
-2. **Ask once**: "Did the rehearsal copy a Storage bucket? If yes, paste the S3 endpoint, region, access key id, secret and bucket name again. Also paste the Supabase connection string (port 5432, never 6543) and the production domain (for BETTER_AUTH_URL)." Never shown back. Before answering, freeze writes on the Supabase-backed app (maintenance or read-only): later writes are not copied. Deploy right after cutover.
+2. **Ask once**: "Did the rehearsal copy Storage buckets? If yes, paste the S3 endpoint, region, access key id, secret and the bucket names again. Also paste the Supabase Session pooler connection string (port 5432, never 6543) and the production domain (for BETTER_AUTH_URL)." Never shown back. Before answering, freeze writes on the Supabase-backed app (maintenance or read-only): later writes are not copied. Deploy right after cutover.
 3. **Rollback point**: `dbm backup <slug>`. If it fails, STOP before the import and report the error.
-4. **Re-import** (add `--users-out .dbm-users.csv` if `scripts/migrate-supabase-users.ts` exists, and the `--storage-*` flags if a bucket was given):
+4. **Re-import** (add `--users-out .dbm-users.csv` if `scripts/migrate-supabase-users.ts` exists, and the `--storage-*` flags with one `--storage-bucket` per bucket if any were given):
    ```bash
    dbm import <slug> --from "<url>" --data-only --replace --yes --confirm <slug> --json > .dbm-import.json
    jq -e '.mismatched | length == 0' .dbm-import.json
@@ -163,7 +163,7 @@ Supabase stays live, read-only. Write the skill's files (`lib/*.ts` templates, `
         for e in production preview development; do vercel env rm "$k" "$e" --yes; done
       done
    4. Pause the Supabase project (Dashboard > Settings > General > Pause).
-   5. Delete the Supabase S3 access key (Settings > Storage > S3).
+   5. Delete the Supabase S3 access key (Settings > Storage > S3) and reset the database password (both were pasted into a chat).
    6. Locally: delete the `# pre-dbm` and `*SUPABASE*` lines from .env.local.
    ```
 
