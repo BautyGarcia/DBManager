@@ -34,6 +34,20 @@ export interface GlobalOpts {
 
 export type DepsFactory = (io: Io) => Promise<Deps>;
 
+interface ImportCliOpts {
+  from?: string;
+  schemas?: string;
+  storageEndpoint?: string;
+  storageRegion?: string;
+  storageKey?: string;
+  storageSecret?: string;
+  storageBucket?: string[];
+  dataOnly?: boolean;
+  replace?: boolean;
+  usersOut?: string;
+  confirm?: string;
+}
+
 export const defaultDepsFactory: DepsFactory = (io) => makeDeps(makeFileStore(), io);
 
 /** Every command holds ~/.dbm/lock for its whole run so concurrent commands cannot lose state writes. */
@@ -221,28 +235,25 @@ export function buildProgram(io: Io, depsFactory: DepsFactory = defaultDepsFacto
       'export auth.users to a local CSV (mode 0600) for scripts/migrate-supabase-users.ts',
     )
     .option('--confirm <slug>', 'required with --yes --replace')
-    .action(async function (
-      this: Command,
-      slug: string,
-      opts: Record<string, string | undefined> & {
-        dataOnly?: boolean;
-        replace?: boolean;
-        storageBucket?: string[];
-      },
-    ) {
+    .action(async function (this: Command, slug: string, opts: ImportCliOpts) {
       const g = globals(this);
       const buckets = opts.storageBucket ?? [];
+      const given =
+        [opts.storageEndpoint, opts.storageRegion, opts.storageKey, opts.storageSecret].filter(
+          Boolean,
+        ).length + (buckets.length > 0 ? 1 : 0);
+      if (given > 0 && given < 5)
+        throw userError(
+          'storage needs all of --storage-endpoint, --storage-region, --storage-key, --storage-secret and at least one --storage-bucket',
+          'import.storage',
+        );
       const storage =
-        opts.storageEndpoint &&
-        opts.storageRegion &&
-        opts.storageKey &&
-        opts.storageSecret &&
-        buckets.length > 0
+        given === 5
           ? {
-              endpoint: opts.storageEndpoint,
-              region: opts.storageRegion,
-              keyId: opts.storageKey,
-              keySecret: opts.storageSecret,
+              endpoint: opts.storageEndpoint ?? '',
+              region: opts.storageRegion ?? '',
+              keyId: opts.storageKey ?? '',
+              keySecret: opts.storageSecret ?? '',
               buckets,
             }
           : undefined;

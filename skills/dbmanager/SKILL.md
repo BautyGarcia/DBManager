@@ -105,17 +105,17 @@ bash ~/.claude/skills/dbmanager/preflight.sh "$PWD"
 
 ## 3. migrate (rehearsal)
 
-Supabase stays live, read-only. Write the skill's files (`lib/*.ts` templates, `drizzle.config.ts`, `scripts/`), including the bcrypt hook in `lib/auth.ts`; never edit application code (components, routes, `lib/supabase.ts`).
+Supabase stays live, read-only. Write only the skill's files (`lib/*.ts` templates, `drizzle.config.ts`, `scripts/`, the bcrypt hook in `lib/auth.ts`); never edit application code.
 
-1. **Already rehearsed?** If `MIGRATION.md` exists, STOP: "This app was already rehearsed. Run /dbmanager cutover, or to start over: `dbm destroy <slug>` (operator), delete MIGRATION.md, then /dbmanager." If `.env.local` already has a `DATABASE_URL_SESSION` line but no `MIGRATION.md`, an earlier rehearsal stopped at the import: **resume** at step 2 (skip step 4).
+1. **State check**. `MIGRATION.md` exists: STOP "This app was already rehearsed. Run /dbmanager cutover, or start over (step 1 text below)." `.dbm-rehearsal` exists (an earlier rehearsal stopped before hand-off): read the slug from it, require `dbm list --json | jq -e '.[] | select(.slug=="<slug>" and .status=="running")' >/dev/null` (else start over), then **resume**: steps 2-3, §2 steps 6-9 (idempotent) and the db-host grep, then step 5. Start over = "`dbm destroy <slug>` (operator); `rm -f MIGRATION.md .dbm-rehearsal`; delete the dbm and `# pre-dbm` lines from .env.local; then /dbmanager."
 2. **Storage check**: `grep -rlF '.storage.' --exclude-dir={node_modules,.next} --include='*.[jt]s' --include='*.[jt]sx' .`. If it matches, list bucket names: `grep -rhoE "storage\.from\(['\"][^'\"]+['\"]\)" --exclude-dir={node_modules,.next} --include='*.[jt]s' --include='*.[jt]sx' . | sort -u`.
-3. **Ask once, in one message**: "Paste your Supabase **Session pooler** connection string (Dashboard > Connect > Session pooler, port 5432, never 6543; the direct host is IPv6-only)." Only if step 2 matched, add: "and the Storage S3 endpoint, region, access key id and secret (Settings > Storage > S3). I found buckets: <names>. Confirm which to copy; each lands under `<bucket>/`." Say: "Used once, never shown back." 
-4. Run §2 steps 2, 4-9 (append mode in step 5), then the db-host grep of step 11. No Vercel until cutover.
+3. **Ask once, in one message**: "Paste your Supabase **Session pooler** connection string (Dashboard > Connect > Session pooler, port 5432, never 6543; the direct host is IPv6-only)." Only if step 2 matched, add: "and the Storage S3 endpoint, region, access key id and secret (Settings > Storage > S3). I found buckets: <names>. Confirm which to copy and name any missing; each lands under `<bucket>/`." Say: "Used once, never shown back."
+4. Run §2 steps 2, 4-9 (append mode in step 5), then the db-host grep of step 11. If `.dbm-create.json` has `"existed": true`: `rm -f .dbm-create.json`, STOP "Project <slug> already exists on dbm but this folder was never rehearsed: pick another slug or have the operator run `dbm destroy <slug>`." After step 4 succeeds: `echo <slug> > .dbm-rehearsal`. No Vercel until cutover.
 5. **Import** (secrets only here; never repeat the command or its output in prose):
    ```bash
    dbm import <slug> --from "<url>" [--storage-endpoint <e> --storage-region <r> --storage-key <id> --storage-secret <s> --storage-bucket <a> --storage-bucket <b>] --users-out .dbm-users.csv --json > .dbm-import.json
    ```
-   One `--storage-bucket` per bucket. Non-zero exit: `rm -f .dbm-import.json .dbm-users.csv`, report the one-line error without URLs, STOP (re-running /dbmanager resumes at step 2).
+   One `--storage-bucket` per bucket. Non-zero exit: `rm -f .dbm-import.json .dbm-users.csv`, report the one-line error without URLs, STOP. A connection error: re-running /dbmanager resumes at step 2. An rclone/storage error: the database part already loaded, so start over (step 1 text).
 6. **Inventory**:
    ```bash
    node ~/.claude/skills/dbmanager/inventory.mjs . --import-json .dbm-import.json && rm -f .dbm-import.json
@@ -130,7 +130,7 @@ Supabase stays live, read-only. Write the skill's files (`lib/*.ts` templates, `
      ```
      Then apply step 3 of "Preserve accounts" in `<dbmRoot>/docs/migration-from-supabase.md` (bcrypt verify + rehash hook) to `lib/auth.ts`.
    - Both: `rm -f .dbm-users.csv`.
-8. **Hand off** (no tsc gate: old Supabase code still compiles; `MIGRATION.md` is the gate). End with the §2.11 summary with `- Storage (dbm): bucket <slug>; presigned helpers in lib/s3.ts`, `- Vercel: untouched until cutover`, and its `Next:` line replaced by:
+8. **Hand off** (`rm -f .dbm-rehearsal`; no tsc gate: old Supabase code still compiles; `MIGRATION.md` is the gate). End with the §2.11 summary with `- Storage (dbm): bucket <slug>; presigned helpers in lib/s3.ts`, `- Vercel: untouched until cutover`, and its `Next:` line replaced by:
    ```
    - Supabase: data copied (rehearsal); storage buckets <a, b> copied under <bucket>/ prefixes | not used; users preserved | re-register
    - MIGRATION.md: N usages in F files, P policies, E import errors
@@ -179,7 +179,6 @@ Supabase stays live, read-only. Write the skill's files (`lib/*.ts` templates, `
 | Mistake | Fix |
 |---|---|
 | `> .env.local` over an existing file (loses Supabase keys) | §2.5 append recipe |
-| Supabase app treated as connect | §3 |
 | Inventing a data/users/storage procedure | §3.5-3.7 |
 | Rewriting Supabase calls yourself | Stop at the summary |
 | tsc gate in migrate mode | Skip (§3.8) |

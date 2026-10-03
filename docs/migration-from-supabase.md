@@ -73,7 +73,7 @@ Take `dbm backup <slug>` before a `--replace` run. It is your rollback point.
 
 Caveat: a source table named like a protected table (`user`, `session`, `account`, `verification`, `rateLimit`, `__drizzle_migrations`) collides with the better-auth one. The schema import reports "already exists" and the data load copies its rows into the existing table. With `--replace` that table is never truncated, so at cutover its rows are loaded on top, fail as duplicates, and the table shows MISMATCH every time. Rename or drop it in the source before importing, or expect to clean it up afterwards.
 
-`--storage-bucket` may be repeated; each bucket is copied under its own prefix and re-copies are idempotent (`rclone copy --size-only`).
+`--storage-bucket` may be repeated; each bucket is copied under its own prefix and re-copies are idempotent (`rclone copy --size-only`). Changed in v2: a single bucket is also prefixed now; earlier imports copied it to the bucket root. Names Supabase allows but this flag rejects (spaces, punctuation) can be copied with the by-hand `rclone` command below.
 
 ### Counts and policies in the report
 
@@ -205,7 +205,7 @@ Push the env vars to Vercel (production, preview and development as separate cal
 2. Verify sign-in and one write on the production URL, plus uploads and the main queries.
 3. Remove the Supabase env vars from Vercel (`NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, in all three environments).
 4. Pause the Supabase project.
-5. Delete the Supabase S3 access key.
+5. Delete the Supabase S3 access key and reset the database password (both were pasted into a chat).
 6. Locally, delete the `# pre-dbm` and `*SUPABASE*` lines from `.env.local`.
 
 If something goes wrong before step 3, see [Roll back a cutover](runbook.md#roll-back-a-cutover).
