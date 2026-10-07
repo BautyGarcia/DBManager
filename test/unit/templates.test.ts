@@ -43,10 +43,10 @@ describe('templates/nextjs', () => {
     expect(s).toContain('process.loadEnvFile(".env.local")');
     expect(s).toContain('existsSync(".env.local")');
   });
-  it('vercel.json pins gru1', () => {
+  it('vercel.json pins iad1', () => {
     expect(JSON.parse(readFileSync('templates/nextjs/vercel.json', 'utf8'))).toEqual({
       $schema: 'https://openapi.vercel.sh/vercel.json',
-      regions: ['gru1'],
+      regions: ['iad1'],
     });
   });
 });

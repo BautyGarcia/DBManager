@@ -66,7 +66,7 @@ bash ~/.claude/skills/dbmanager/preflight.sh "$PWD"
    cp "$T/app/api/auth/[...all]/route.ts" "app/api/auth/[...all]/"
    cp "$T/drizzle.config.ts" "$T/vercel.json" "$T/.env.example" .
    ```
-   With an existing `vercel.ts`, skip `vercel.json`; add `regions: ['gru1']` there.
+   With an existing `vercel.ts`, skip `vercel.json`; add `regions: ['iad1']` there.
 7. **Dependencies** (never install `pg`; drizzle-kit would prefer it):
    ```bash
    npm i better-auth@^1.7.6 drizzle-orm@^0.45.3 postgres@^3.4.9 @aws-sdk/client-s3@^3.1144.0 @aws-sdk/s3-request-presigner@^3.1144.0
@@ -97,7 +97,7 @@ bash ~/.claude/skills/dbmanager/preflight.sh "$PWD"
     - Database: Postgres 18 via <db-host>:6432 (DATABASE_URL in .env.local; DATABASE_URL_SESSION for migrations)
     - Auth: better-auth, tables created (user, session, account, verification, rateLimit); POST /api/auth/*
     - Storage: bucket <slug>; presigned helpers in lib/s3.ts
-    - Templates: lib/db.ts lib/auth.ts lib/auth-client.ts lib/s3.ts lib/schema.ts drizzle.config.ts vercel.json (gru1)
+    - Templates: lib/db.ts lib/auth.ts lib/auth-client.ts lib/s3.ts lib/schema.ts drizzle.config.ts vercel.json (iad1)
     - Scripts: npm run db:push | db:generate | db:migrate | auth:schema
     - Vercel: <"env pushed to production, preview and development" | "not linked. After `vercel link`, run:" + the step-10 commands, indented>
     Next: add tables to lib/schema.ts and run npm run db:push. Development continues with your usual skills.

@@ -5,7 +5,7 @@
 ```
                                 PUBLIC INTERNET
                                       │
- Vercel functions (gru1) ──TLS──►     │ db.example.com:6432 ──► dbm-pgbouncer ─┬─► <appName-A>:5432
+ Vercel functions (iad1) ──TLS──►     │ db.example.com:6432 ──► dbm-pgbouncer ─┬─► <appName-A>:5432
                                       │   (verify-full, Let's Encrypt)         ├─► <appName-B>:5432
                                       │                                        └─► ...
  Vercel / browsers ────────TLS──►     │ s3.example.com:443 ──► Traefik ──► dbm-garage:3900 (S3 API, signed only)
@@ -98,7 +98,7 @@ Install the skill by symlinking `skills/dbmanager` into `~/.claude/skills/`. Aft
 
 ## Provider note
 
-A São Paulo VPS (for example Vultr `sao` or Hostinger) sits in the same metro as Vercel `gru1`. An Argentine provider (for example DonWeb) bills in ARS and keeps data in Argentina but adds about 30 ms per query round trip. Both work with this design; it is your call. With the default Vercel region (`iad1`) each query would add about 150 ms, which is why the templates pin `gru1`.
+Put the VPS in the same metro as a Vercel region and pin that region in `vercel.json`: a São Paulo VPS pairs with `gru1`, a US East Coast VPS (the template default) with `iad1`. An Argentine provider (for example DonWeb) bills in ARS and keeps data in Argentina but adds about 30 ms per query round trip. Both work with this design; it is your call. With the default Vercel region (`iad1`) each query would add about 150 ms, which is why the templates pin `gru1`.
 
 ## Security
 

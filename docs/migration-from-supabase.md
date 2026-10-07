@@ -199,7 +199,7 @@ There are two options:
 
 ## 4. Deploy and verify
 
-Push the env vars to Vercel (production, preview and development as separate calls; `BETTER_AUTH_URL` for production only) and pin `gru1` in `vercel.json`. Put the Supabase-backed app into maintenance or read-only mode first: writes after the snapshot are not copied. A count mismatch usually means the source was still taking writes: freeze writes and re-run the cutover. Then follow the order of the skill's closing checklist:
+Push the env vars to Vercel (production, preview and development as separate calls; `BETTER_AUTH_URL` for production only) and pin the Vercel region nearest your VPS in `vercel.json` (the template ships `iad1`). Put the Supabase-backed app into maintenance or read-only mode first: writes after the snapshot are not copied. A count mismatch usually means the source was still taking writes: freeze writes and re-run the cutover. Then follow the order of the skill's closing checklist:
 
 1. Deploy to production: `vercel --prod`.
 2. Verify sign-in and one write on the production URL, plus uploads and the main queries.
