@@ -64,6 +64,11 @@ const DestinationRow = z.looseObject({
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEPLOY_TIMEOUT_MS = 120_000;
 
+/** Dokploy echoes the failing backup script, rclone flags and all, in its error bodies. */
+export function redactSecrets(msg: string): string {
+  return msg.replace(/(--s3-(?:secret-access-key|access-key-id)=)[^\s"']+/g, '$1[redacted]');
+}
+
 export function makeDokployClient(o: DokployClientOptions): DokployClient {
   const base = o.baseUrl.replace(/\/+$/, '');
 
@@ -118,7 +123,10 @@ export function makeDokployClient(o: DokployClientOptions): DokployClient {
     }
     if (!res.ok) {
       const msg = (json as { message?: string } | undefined)?.message ?? (text || res.statusText);
-      throw remoteError(`dokploy ${proc} -> HTTP ${res.status}: ${msg}`, `dokploy.${proc}`);
+      throw remoteError(
+        `dokploy ${proc} -> HTTP ${res.status}: ${redactSecrets(msg)}`,
+        `dokploy.${proc}`,
+      );
     }
     return json;
   }

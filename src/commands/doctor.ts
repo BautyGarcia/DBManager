@@ -1,4 +1,5 @@
 import { quote } from 'shlex';
+import { backupFileTime, newestBackupFile } from '../core/backup-files.js';
 import { deriveNames } from '../core/naming.js';
 import { renderPgbouncerIni, renderUserlist } from '../core/pgbouncer.js';
 import { listProjects } from '../core/state.js';
@@ -205,11 +206,9 @@ export async function doctorCommand(deps: Deps): Promise<{ checks: Check[]; ok: 
           deps.cfg.dumpsDestinationId,
           `${p.dokploy.appName}/${deriveNames(p.slug).backupPrefix}/`,
         );
-        const newest = files
-          .map((f) => new Date(f.ModTime).getTime())
-          .sort((a, b) => a - b)
-          .at(-1);
-        const hours = newest ? Math.floor((now - newest) / 3_600_000) : undefined;
+        const newestFile = newestBackupFile(files);
+        const newest = newestFile ? backupFileTime(newestFile) : undefined;
+        const hours = newest !== undefined ? Math.floor((now - newest) / 3_600_000) : undefined;
         add(
           `${p.slug}.backup.age`,
           hours !== undefined && hours < BACKUP_MAX_AGE_HOURS,

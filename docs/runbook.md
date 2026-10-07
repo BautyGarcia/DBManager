@@ -200,6 +200,19 @@ A reload does not drop client connections. `dbm doctor` reports drift between th
 - Dokploy's cron runs in UTC; `dbm` schedules each project at `<minute> 6 * * *` with the minute in 0-24 chosen per slug (06:00-06:24 UTC, 03:00-03:24 in Buenos Aires).
 - If a destination test fails during `init` or a backup fails with a B2 error, the rclone error is shown by Dokploy; check the bucket name, region/endpoint (`https://s3.<region>.backblazeb2.com`) and that the application key covers the bucket with Read and Write. Dokploy's `additionalFlags` field can add rclone flags if needed.
 
+## Backblaze daily caps (403 Forbidden on HEAD or download)
+
+Backblaze bills `HeadObject` and downloads as Class B transactions and blocks them for the rest of the day (reset at midnight Pacific) once the account's daily cap is reached. The free allowance is 2,500 Class B calls per day. Symptoms: Dokploy backup logs show `HeadObject ... StatusCode: 403 ... Forbidden` right after a successful upload, `dbm backup` exits 2 with the same text, `dbm restore` cannot fetch a dump, and the native API answers `download_cap_exceeded`. Listing (`rclone ls`, `dbm list`) keeps working because listing is Class C.
+
+What burns the cap: a mirror sync that compares modification times does one HEAD per object per night. `dbm init` now writes the sync with `--size-only --s3-no-head`, the Dokploy destination with `--s3-no-head`, and restores with `--s3-no-head-object`, so a day's usage is a handful of calls. On a host set up before 2026-10-07, apply the same flags by hand:
+
+```bash
+# /etc/cron.d/dbm-storage-sync: add --size-only --s3-no-head to the sync and --s3-no-head to the copy
+# Dokploy > Settings > S3 Destinations > dbm-dumps > Additional flags: --s3-no-head
+```
+
+Also raise the cap in the Backblaze console (Caps & Alerts) to a small daily amount so a one-off burst (a first full mirror, a restore drill) degrades into cents instead of a 403. Dumps that Dokploy reported as failed were still uploaded; the failure is the post-upload HEAD.
+
 ## Upgrading component versions
 
 Images are pinned in `src/core/compose.ts` (`IMAGES`): PgBouncer `edoburu/pgbouncer:v1.26.0-p0`, Garage `dxflrs/garage:v2.4.1`, certs-dumper, rclone. Postgres versions are chosen per project (`--pg 17|18`).

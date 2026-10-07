@@ -549,7 +549,9 @@ cat ca.crt
         bucket: b.dumpsBucket,
         region: b.region,
         endpoint: b.endpoint,
-        additionalFlags: null,
+        // Skip the post-upload HEAD: Backblaze counts it as a Class B transaction and, past the daily
+        // cap, answers 403, which Dokploy treats as a failed backup and deletes the good upload.
+        additionalFlags: ['--s3-no-head'],
       };
       try {
         await dokploy().testDestination(input);

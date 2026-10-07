@@ -1,5 +1,6 @@
 import { quote } from 'shlex';
 import type { BackupFile } from '../adapters/types.js';
+import { newestBackupFile } from '../core/backup-files.js';
 import { IMAGES } from '../core/compose.js';
 import { userError } from '../core/exit.js';
 import { deriveNames } from '../core/naming.js';
@@ -11,8 +12,7 @@ import { requireConfirmation } from './destroy.js';
 export function pickBackup(files: BackupFile[], backupId: string): BackupFile {
   if (!files.length) throw userError('no backups found for this project', 'restore');
   if (backupId === 'latest') {
-    const sorted = [...files].sort((a, b) => a.ModTime.localeCompare(b.ModTime));
-    const latest = sorted.at(-1);
+    const latest = newestBackupFile(files);
     if (latest) return latest;
   }
   const f = files.find(
@@ -80,7 +80,7 @@ export const RESTORE_LIST = '/tmp/dbm-restore.list';
 export function restoreScript(i: RestoreScriptInput): string {
   const source =
     i.source ??
-    `docker run --rm -i --network ${quote(i.network)} ${quote(IMAGES.rclone)} --config /dev/stdin cat ${quote(`dst:${i.bucket}/${i.objectPath}`)}`;
+    `docker run --rm -i --network ${quote(i.network)} ${quote(IMAGES.rclone)} --config /dev/stdin cat ${quote(`dst:${i.bucket}/${i.objectPath}`)} --s3-no-head-object`;
   const c = quote(i.container);
   const dump = quote(RESTORE_DUMP);
   const list = quote(RESTORE_LIST);

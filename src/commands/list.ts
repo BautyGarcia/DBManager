@@ -1,3 +1,4 @@
+import { backupFileTime, newestBackupFile } from '../core/backup-files.js';
 import { deriveNames } from '../core/naming.js';
 import { listProjects } from '../core/state.js';
 import { formatBytes } from '../core/units.js';
@@ -81,11 +82,9 @@ export async function listCommand(deps: Deps): Promise<ListRow[]> {
         deps.cfg.dumpsDestinationId,
         `${p.dokploy.appName}/${names.backupPrefix}/`,
       );
-      const newest = files
-        .map((f) => f.ModTime)
-        .sort()
-        .at(-1);
-      if (newest) lastBackup = newest;
+      const newest = newestBackupFile(files);
+      const t = newest ? backupFileTime(newest) : undefined;
+      if (newest && t !== undefined) lastBackup = newest.ModTime || new Date(t).toISOString();
     } catch {
       lastBackup = '?';
     }
