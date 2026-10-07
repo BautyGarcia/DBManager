@@ -1,6 +1,6 @@
 {
   "name": "db-manager",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Self-hosted per-project Postgres + S3 on one VPS, managed from the CLI (dbm).",
   "license": "MIT",
   "repository": {
