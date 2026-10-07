@@ -349,7 +349,7 @@ systemctl enable --now tailscaled
       const pasted =
         o.dokployApiKey ??
         (await a.prompt(
-          `Open ${need('tailnetUrl')} , create the admin account, then Settings -> API/CLI -> generate an API key with Rate limit OFF. Paste it:`,
+          `Open ${need('tailnetUrl')} , create the admin account, then Settings -> Profile -> API/CLI tab -> Generate API Key (Rate limiting off, limits empty). Paste it:`,
           { secret: true },
         ));
       const tmp = a.makeDokploy(need('tailnetUrl'), pasted);

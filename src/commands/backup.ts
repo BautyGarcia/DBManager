@@ -88,7 +88,7 @@ export function restoreScript(i: RestoreScriptInput): string {
   const list = quote(RESTORE_LIST);
   const filter = `pg_restore -l ${dump} | grep -Ev ${quote('^;|[[:space:]]EXTENSION[[:space:]]|COMMENT - EXTENSION')} > ${list}`;
   return [
-    // pipefail is supported by dash 0.5.12 (Ubuntu 24.04 /bin/sh).
+    // Run with bash: Ubuntu 24.04's /bin/sh (dash 0.5.12) rejects `set -o pipefail`.
     'set -e -o pipefail',
     `trap ${quote(`rc=$?; docker exec ${c} rm -f ${dump} ${list}; exit $rc`)} EXIT`,
     `${source} | gunzip | docker exec -i ${c} sh -c ${quote(`cat > ${dump}`)}`,
@@ -189,7 +189,7 @@ export async function restoreCommand(
     database: target.postgres.database,
   });
   deps.io.err(`restoring ${file.Name} into ${target.slug}...\n`);
-  await deps.ssh.run(['sh', '-c', script], { input: rcloneConf, timeoutMs: 30 * 60_000 });
+  await deps.ssh.run(['bash', '-c', script], { input: rcloneConf, timeoutMs: 30 * 60_000 });
   if (useTomb && o.as === o.slug) {
     await deps.store.saveState(removeTombstone(await deps.store.loadState(), o.slug));
   }
