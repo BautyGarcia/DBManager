@@ -56,7 +56,7 @@ describe('restore', () => {
     const call = t.runner.calls.find((c) => c.argv.join(' ').includes('pg_restore'));
     const cmd = call?.argv.join(' ') ?? '';
     expect(cmd).toContain(
-      'rclone/rclone:1 --config /dev/stdin cat dst:dumps/pg-my-app-abc123/db/my-app/2026-09-30T06-03-00-000Z.sql.gz --s3-no-head-object',
+      'rclone/rclone:1 --config /dev/stdin cat dst:dumps/pg-my-app-abc123/db/my-app/2026-09-30T06-03-00-000Z.sql.gz',
     );
     expect(cmd).toContain('gunzip');
     expect(cmd).toContain('pg_restore -U my_app_app -d my_app -O --clean --if-exists');
@@ -366,7 +366,7 @@ describe('restoreScript (C3)', () => {
     expect(s.split('\n')).toEqual([
       'set -e -o pipefail',
       "trap 'rc=$?; docker exec c_pg-x rm -f /tmp/dbm-restore.dump /tmp/dbm-restore.list; exit $rc' EXIT",
-      "docker run --rm -i --network dokploy-network rclone/rclone:1 --config /dev/stdin cat dst:dumps/pg-x/db/x/a.sql.gz --s3-no-head-object | gunzip | docker exec -i c_pg-x sh -c 'cat > /tmp/dbm-restore.dump'",
+      "docker run --rm -i --network dokploy-network rclone/rclone:1 --config /dev/stdin cat dst:dumps/pg-x/db/x/a.sql.gz | gunzip | docker exec -i c_pg-x sh -c 'cat > /tmp/dbm-restore.dump'",
       "docker exec c_pg-x sh -c 'pg_restore -l /tmp/dbm-restore.dump | grep -Ev '\"'\"'^;|[[:space:]]EXTENSION[[:space:]]|COMMENT - EXTENSION'\"'\"' > /tmp/dbm-restore.list'",
       'docker exec c_pg-x pg_restore -U x_app -d x -O --clean --if-exists --no-comments -L /tmp/dbm-restore.list /tmp/dbm-restore.dump',
     ]);

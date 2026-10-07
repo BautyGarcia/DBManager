@@ -204,7 +204,7 @@ A reload does not drop client connections. `dbm doctor` reports drift between th
 
 Backblaze bills `HeadObject` and downloads as Class B transactions and blocks them for the rest of the day (reset at midnight Pacific) once the account's daily cap is reached. The free allowance is 2,500 Class B calls per day. Symptoms: Dokploy backup logs show `HeadObject ... StatusCode: 403 ... Forbidden` right after a successful upload, `dbm backup` exits 2 with the same text, `dbm restore` cannot fetch a dump, and the native API answers `download_cap_exceeded`. Listing (`rclone ls`, `dbm list`) keeps working because listing is Class C.
 
-What burns the cap: a mirror sync that compares modification times does one HEAD per object per night. `dbm init` now writes the sync with `--size-only --s3-no-head`, the Dokploy destination with `--s3-no-head`, and restores with `--s3-no-head-object`, so a day's usage is a handful of calls. On a host set up before 2026-10-07, apply the same flags by hand:
+What burns the cap: a mirror sync that compares modification times does one HEAD per object per night. `dbm init` now writes the sync with `--size-only --s3-no-head`, the Dokploy destination with `--s3-no-head`, so a day's usage is a handful of calls (restores keep their single HEAD per dump). On a host set up before 2026-10-07, apply the same flags by hand:
 
 ```bash
 # /etc/cron.d/dbm-storage-sync: add --size-only --s3-no-head to the sync and --s3-no-head to the copy

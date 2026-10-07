@@ -62,6 +62,8 @@ export interface RestoreScriptInput {
   /**
    * Shell command that writes the gzipped dump to stdout. Defaults to `rclone cat` of the object
    * from the dumps destination (credentials on stdin); the integration test feeds a local file.
+   * Never add `--s3-no-head-object` here: with it rclone resolves the path as a directory and
+   * `cat` prints nothing (verified against Backblaze with rclone 1.75).
    */
   source?: string;
 }
@@ -80,7 +82,7 @@ export const RESTORE_LIST = '/tmp/dbm-restore.list';
 export function restoreScript(i: RestoreScriptInput): string {
   const source =
     i.source ??
-    `docker run --rm -i --network ${quote(i.network)} ${quote(IMAGES.rclone)} --config /dev/stdin cat ${quote(`dst:${i.bucket}/${i.objectPath}`)} --s3-no-head-object`;
+    `docker run --rm -i --network ${quote(i.network)} ${quote(IMAGES.rclone)} --config /dev/stdin cat ${quote(`dst:${i.bucket}/${i.objectPath}`)}`;
   const c = quote(i.container);
   const dump = quote(RESTORE_DUMP);
   const list = quote(RESTORE_LIST);
