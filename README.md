@@ -106,7 +106,7 @@ Postgres is never published; PgBouncer on 6432 is the only public database port,
 
 ## Recovery
 
-See [docs/runbook.md](docs/runbook.md) for restores, VPS loss, Garage metadata recovery, certificate and Tailscale problems, resuming a stopped `dbm init`, and upgrading component versions.
+See [docs/platform.md](docs/platform.md) for what runs where, ports, routing, backups and how to reason about requests outside the skill (written for agents and operators). See [docs/runbook.md](docs/runbook.md) for restores, VPS loss, Garage metadata recovery, certificate and Tailscale problems, resuming a stopped `dbm init`, and upgrading component versions.
 
 ## Development
 

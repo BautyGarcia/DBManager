@@ -5,7 +5,7 @@ description: Use when the user wants to start building a new app or MVP, says "/
 
 # dbmanager: provision an app on the operator's dbm platform
 
-`dbm` is the operator's CLI for their self-hosted platform (Postgres, better-auth, Garage S3, backups). This skill wires a folder to a dbm project and stops; features and the Supabase rewrite belong to the user's own skills.
+`dbm` is the operator's CLI for their self-hosted platform. This skill wires a folder to a dbm project and stops; features and the Supabase rewrite belong to the user's skills. Any other platform task (other services, Redis, deploys, ops): read `<dbmRoot>/docs/platform.md` first.
 
 | Mode | Folder | Recipe |
 |---|---|---|
@@ -27,7 +27,7 @@ bash ~/.claude/skills/dbmanager/preflight.sh "$PWD"
 | `configured` | STOP: the operator must run `dbm init` first |
 | `templatesDir` | STOP: dbm install is broken |
 | `slugOk` | derive a corrected slug (§2.2) and ask |
-| `mode` = `unknown` | STOP: non-Next project; ask what to do |
+| `mode` = `unknown` | STOP: non-Next project; read `<dbmRoot>/docs/platform.md` §11, then ask |
 | `hasJq` | `brew install jq` |
 
 `mode` picks the recipe; a typed `/dbmanager cutover` makes it `cutover` (preflight saying `migrate` is then normal). Keep `dbmRoot`.
@@ -40,7 +40,7 @@ bash ~/.claude/skills/dbmanager/preflight.sh "$PWD"
    ```bash
    npx --yes create-next-app@latest . --ts --app --no-tailwind --no-eslint --no-src-dir --import-alias "@/*" --use-npm --yes
    ```
-   Fixed flags. No commits.
+   Fixed flags; no commits.
 4. **Provision**: `dbm create <slug> --json > .dbm-create.json` (secrets; never print it). Exit 1 with status `provisioning`: STOP; user runs `dbm destroy <slug>`.
 5. **`.env.local`**. No `.env.local` yet:
    ```bash
@@ -67,7 +67,7 @@ bash ~/.claude/skills/dbmanager/preflight.sh "$PWD"
    cp "$T/drizzle.config.ts" "$T/vercel.json" "$T/.env.example" .
    ```
    With an existing `vercel.ts`, skip `vercel.json`; add `regions: ['iad1']` there.
-7. **Dependencies** (never install `pg`; drizzle-kit would prefer it):
+7. **Dependencies** (never `pg`; drizzle-kit prefers it):
    ```bash
    npm i better-auth@^1.7.6 drizzle-orm@^0.45.3 postgres@^3.4.9 @aws-sdk/client-s3@^3.1144.0 @aws-sdk/s3-request-presigner@^3.1144.0
    npm i -D drizzle-kit@^0.31.11 auth@^1.7.6
